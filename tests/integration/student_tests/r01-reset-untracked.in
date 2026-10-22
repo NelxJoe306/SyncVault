@@ -1,0 +1,33 @@
+# reset must stop before it overwrites an untracked file.
+I definitions.inc
+> init
+<<<
++ f.txt wug.txt
+> add f.txt
+<<<
+> commit "adds f"
+<<<
+> rm f.txt
+<<<
+> commit "removes f"
+<<<
++ f.txt notwug.txt
+> log
+===
+${COMMIT_HEAD}
+removes f
+
+===
+${COMMIT_HEAD}
+adds f
+
+===
+${COMMIT_HEAD}
+initial commit
+
+<<<*
+D UID1 "${2}"
+> reset ${UID1}
+There is an untracked file in the way; delete it, or add and commit it first.
+<<<
+= f.txt notwug.txt

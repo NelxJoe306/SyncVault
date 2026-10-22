@@ -1,0 +1,13 @@
+# add of a new file, then rm: unstage only, keep the working file, nothing to commit.
+I definitions.inc
+> init
+<<<
++ f.txt wug.txt
+> add f.txt
+<<<
+> rm f.txt
+<<<
+E f.txt
+> commit "nothing"
+No changes added to the commit.
+<<<

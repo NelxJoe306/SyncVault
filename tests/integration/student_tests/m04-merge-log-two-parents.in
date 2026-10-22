@@ -1,0 +1,38 @@
+# A merge commit records both parents and the spec message.
+I definitions.inc
+> init
+<<<
++ f.txt wug.txt
+> add f.txt
+<<<
+> commit "base"
+<<<
+> branch other
+<<<
++ g.txt notwug.txt
+> add g.txt
+<<<
+> commit "m1"
+<<<
+> checkout other
+<<<
++ h.txt wug.txt
+> add h.txt
+<<<
+> commit "o1"
+<<<
+> checkout master
+<<<
+> merge other
+<<<
+= h.txt wug.txt
+= g.txt notwug.txt
+> log
+===
+commit [a-f0-9]+
+Merge: [a-f0-9]{7} [a-f0-9]{7}
+${DATE}
+Merged other into master.
+
+${ARBLINES}
+<<<*

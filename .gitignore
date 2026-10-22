@@ -1,0 +1,12 @@
+target/
+.idea/
+*.iml
+.vscode/
+.gitlet/
+*.class
+__pycache__/
+tests/integration/*_[0-9]/
+tests/integration/**/*_[0-9]/
+tests/integration/*_[0-9]*/
+tests/integration/**/*_[0-9]*/
+.DS_Store

@@ -51,10 +51,10 @@ public class Main {
             System.exit(0);
         }
 
-        String curr_bran_head = Utils.readContentsAsString(HEAD);
-        File a = Utils.join(ref, curr_bran_head);
-        if (a.exists()) {
-            currHead = Utils.readContentsAsString(a);
+        String curr_bran_head = Store.getHead();
+        String a = Store.getRef(curr_bran_head);
+        if (a != null) {
+            currHead = a;
         }
 
         switch (firstArg) {

@@ -30,37 +30,13 @@ public class Repository {
      */
     public static final File GITLET_DIR = join(CWD, ".gitlet");
     /**
-     * The Blobs directory.
+     * The SQLite database file.
      */
-    public static final File blob_DIR = join(GITLET_DIR, "blobs");
-    /**
-     * The Stage directory.
-     */
-    public static final File stage_DIR = join(GITLET_DIR, "stage");
-    /**
-     * The Commits directory.
-     */
-    public static final File Commit_DIR = join(GITLET_DIR, "commits");
+    public static final File DB_FILE = join(GITLET_DIR, "gitlet.db");
     /**
      * The Head to point current commit
      */
     public static String currHead;
-    /**
-     * The Branches File.
-     */
-    public static final File HEAD = join(GITLET_DIR, "HEAD");
-    /**
-     * The Reference directory.
-     */
-    public static final File ref = join(GITLET_DIR, "ref");
-    /**
-     * The removal directory
-     */
-    public static final File removal = join(GITLET_DIR, "rm");
-    /**
-     * The Remotes directory.
-     */
-    public static final File remotes_DIR = join(GITLET_DIR, "remotes");
 
     /**
      * initiate the .gitlet folder with a #initial commit
@@ -72,15 +48,9 @@ public class Repository {
             System.exit(0);
         } else {
             GITLET_DIR.mkdir();
-            blob_DIR.mkdir();
-            Commit_DIR.mkdir();
-            stage_DIR.mkdir();
-            HEAD.createNewFile();
-            ref.mkdir();
-            removal.mkdir();
-            remotes_DIR.mkdir();
+            Store.createSchema();
             currHead = Commit.first_commit();
-            writeContents(HEAD, "master");
+            Store.setHead("master");
         }
     }
 
@@ -90,12 +60,9 @@ public class Repository {
      * @param message the commit message
      */
     public static void commit(String message) {
-        File fs = join(stage_DIR, "files");
-        if (!fs.exists()) {
+        if (Store.stagedAdditions().isEmpty()) {
             System.out.println("No changes added to the commit.");
             System.exit(0);
-        } else {
-
         }
     }
 
@@ -123,16 +90,8 @@ public class Repository {
             String hash = Utils.hash(data);
             TreeMap<String, String> m = currCommitFiles_map();
             if (m.containsKey(name) && m.get(name).equals(hash)) {
-                File copyInStage = join(stage_DIR, "files");
-                if (copyInStage.exists()) {
-                    TreeMap<String, String> text = readObject(copyInStage, TreeMap.class);
-                    text.remove(name);
-                    writeObject(copyInStage, text);
-                }
-                File stagedRemoval = join(removal, name);
-                if (stagedRemoval.exists()) {
-                    stagedRemoval.delete();
-                }
+                Store.unstageAdd(name);
+                Store.unstageRemove(name);
                 return;
             }
             saveToStage(name);
@@ -148,15 +107,11 @@ public class Repository {
      */
     public static void rm(String name) throws IOException {
         File CWDf = join(CWD, name);
-        File fs = join(stage_DIR, "files");
+        TreeMap<String, String> m = Store.stagedAdditions();
         boolean staged = false;
-        if (fs.exists()) {
-            TreeMap<String, String> m = readObject(fs, TreeMap.class);
-            if (m.containsKey(name)) {
-                staged = true;
-                m.remove(name);
-                writeObject(fs, m);
-            }
+        if (m.containsKey(name)) {
+            staged = true;
+            Store.unstageAdd(name);
         }
         boolean tracked = currCommitFiles_map().containsKey(name);
         if (!staged && !tracked) {
@@ -166,10 +121,7 @@ public class Repository {
         /* Tracked: remember the removal and delete the working copy.
            Staged only: the unstage above is the whole operation. */
         if (tracked) {
-            File r = join(removal, name);
-            if (!r.exists()) {
-                r.createNewFile();
-            }
+            Store.stageRemove(name);
             restrictedDelete(CWDf);
         }
     }
@@ -192,11 +144,9 @@ public class Repository {
      * initial commit
      */
     public static void log() {
-        String currentId = currHead;
-
-        while (currentId != null) {
-            File commitFile = Utils.join(Commit_DIR, currentId);
-            Commit commit = Utils.readObject(commitFile, Commit.class);
+        List<String> chain = Store.firstParentChain(currHead);
+        for (String currentId : chain) {
+            Commit commit = Store.getCommit(currentId);
 
             List<String> info = commit.returnInfo();
 
@@ -213,8 +163,6 @@ public class Repository {
             System.out.println("Date: " + info.get(0));
             System.out.println(info.get(1));
             System.out.println();
-
-            currentId = info.get(3);
         }
     }
 
@@ -223,8 +171,7 @@ public class Repository {
      * The order of the commits does not matter.
      */
     public static void global_log() {
-        List<String> l = plainFilenamesIn(Commit_DIR);
-        File f;
+        List<String> l = Store.allCommitIds();
         Commit c;
 
         String me;
@@ -233,8 +180,7 @@ public class Repository {
         String par;
         String secPar;
         for (String s : l) {
-            f = join(Commit_DIR, s);
-            c = readObject(f, Commit.class);
+            c = Store.getCommit(s);
             l = c.returnInfo();
             ts = l.get(0);
             me = l.get(1);
@@ -257,21 +203,7 @@ public class Repository {
      *
      */
     public static void find(String fm) {
-        List<String> l = plainFilenamesIn(Commit_DIR);
-        File f;
-        Commit c;
-        String m;
-        List<String> arr_c = new ArrayList<>();
-
-        for (String s : l) {
-            f = join(Commit_DIR, s);
-            c = readObject(f, Commit.class);
-            List<String> la = c.returnInfo();
-            m = la.get(1);
-            if (Objects.equals(fm, m)) {
-                arr_c.add(la.get(2));
-            }
-        }
+        List<String> arr_c = Store.commitIdsWithMessage(fm);
         if (arr_c.isEmpty()) {
             System.out.println("Found no commit with that message.");
         } else {
@@ -307,7 +239,7 @@ public class Repository {
      */
     public static void status() {
         /*  branches  */
-        String currb = readContentsAsString(join(GITLET_DIR, "HEAD"));
+        String currb = Store.getHead();
         List<String> l = allBranchNames();
         System.out.println("=== Branches ===");
         for (String s : l) {
@@ -319,10 +251,7 @@ public class Repository {
         }
         System.out.println();
         /*  staged files  */
-        File f = join(stage_DIR, "files");
-        TreeMap<String, String> stage_m = f.exists()
-                ? readObject(f, TreeMap.class)
-                : new TreeMap<>();
+        TreeMap<String, String> stage_m = Store.stagedAdditions();
         Set<String> sf = stage_m.keySet();
         System.out.println("=== Staged Files ===");
         for (String s : sf) {
@@ -331,10 +260,7 @@ public class Repository {
         System.out.println();
 
         /*removed files*/
-        List<String> removed = plainFilenamesIn(removal);
-        if (removed == null) {
-            removed = new ArrayList<>();
-        }
+        List<String> removed = Store.stagedRemovals();
         System.out.println("=== Removed Files ===");
         for (String s : removed) {
             System.out.format("%s%n", s);
@@ -411,7 +337,7 @@ public class Repository {
         }else {
             File cwd_f = join(CWD, name);
             String hash = curr_com_m.get(name);
-            byte[] text = readContents(join(blob_DIR, hash));
+            byte[] text = Store.getBlob(hash);
             writeContents(cwd_f, text);
             if (!cwd_f.exists()) {
                 cwd_f.createNewFile();
@@ -436,24 +362,12 @@ public class Repository {
      * Zero matches and more than one match are both "no such commit".
      */
     private static String findCommitId(String id) {
-        List<String> commits_name = plainFilenamesIn(Commit_DIR);
-        String match = null;
-        if (commits_name != null) {
-            for (String s : commits_name) {
-                if (s.startsWith(id)) {
-                    if (match != null) {
-                        System.out.println("No commit with that id exists.");
-                        System.exit(0);
-                    }
-                    match = s;
-                }
-            }
-        }
-        if (match == null) {
+        List<String> matches = Store.commitIdsWithPrefix(id);
+        if (matches == null || matches.size() != 1) {
             System.out.println("No commit with that id exists.");
             System.exit(0);
         }
-        return match;
+        return matches.get(0);
     }
 
     /**
@@ -467,14 +381,14 @@ public class Repository {
      */
     public static void check_branch(String name) throws IOException {
         /*check if the branch exists, including remote/branch under ref/ */
-        File rev_bran = Utils.join(ref, name.replace('/', File.separatorChar));
-        if (!rev_bran.isFile()) {
+        String targetCommit = Store.getRef(name);
+        if (targetCommit == null) {
             System.out.println("No such branch exists.");
             System.exit(0);
         }
         /*check if is the current branch*/
-        File head_file = Utils.join(GITLET_DIR, "HEAD");
-        if (readContentsAsString(head_file).equals(name)) {
+        String currb = Store.getHead();
+        if (Objects.equals(currb, name)) {
             System.out.println("No need to checkout the current branch.");
             System.exit(0);
         }
@@ -482,25 +396,19 @@ public class Repository {
 
         /*check if is untracked*/
         List<String> l = plainFilenamesIn(CWD);
-        File f = Utils.join(stage_DIR, "files");
-        Set<String> sf;
+        TreeMap<String, String> stageAdd = Store.stagedAdditions();
+        Set<String> sf = stageAdd.keySet();
         Map<String, String> cf = currCommitFiles_map();
 
         String oldHead = currHead;
-        currHead = Utils.readContentsAsString(rev_bran);
+        currHead = targetCommit;
         Set<String> targetFiles = currCommitFiles_map().keySet();
         currHead = oldHead;
 
-        List<String> removedNames = plainFilenamesIn(removal);
-        Set<String> removedSet = removedNames == null
-                ? Collections.emptySet()
-                : new HashSet<>(removedNames);
+        List<String> removedNames = Store.stagedRemovals();
+        Set<String> removedSet = new HashSet<>(removedNames);
 
         if (l != null) {
-            sf = f.exists()
-                    ? readObject(f, TreeMap.class).keySet()
-                    : Collections.emptySet();
-
             for (String s : l) {
                 boolean untracked = (!cf.containsKey(s) || removedSet.contains(s))
                         && !sf.contains(s);
@@ -519,12 +427,11 @@ public class Repository {
             }
         }
 
-        currHead = Utils.readContentsAsString(rev_bran);
-        Utils.writeContents(Utils.join(GITLET_DIR, "HEAD"), name);
+        currHead = targetCommit;
         TreeMap<String, String> cm = currCommitFiles_map();
         for (String s : cm.keySet()) {
             File copy = Utils.join(CWD, s);
-            byte[] content = Utils.readContents(Utils.join(blob_DIR, cm.get(s)));
+            byte[] content = Store.getBlob(cm.get(s));
             Utils.writeContents(copy, content);
             if (!copy.exists()) {
                 copy.createNewFile();
@@ -535,8 +442,11 @@ public class Repository {
                 Utils.join(CWD, s).delete();
             }
         }
+        Store.begin();
+        Store.setHead(name);
         resetStage();
         resetRemoval();
+        Store.commitTx();
     }
 
     /**
@@ -548,9 +458,9 @@ public class Repository {
 
         String full_id = findCommitId(id);
 
-        File aim_com = join(Commit_DIR, full_id);
+        Commit aim_com = Store.getCommit(full_id);
 
-        if (!aim_com.exists()) {
+        if (aim_com == null) {
             System.out.println("No commit with that id exists.");
             return;
         }
@@ -565,17 +475,9 @@ public class Repository {
         List<String> files = plainFilenamesIn(CWD);
 
         if (files != null) {
-
-            File stageFile = Utils.join(stage_DIR, "files");
-
-            Set<String> stagedFiles = stageFile.exists()
-                    ? readObject(stageFile, TreeMap.class).keySet()
-                    : Collections.emptySet();
-
-            List<String> removedNames = plainFilenamesIn(removal);
-            Set<String> removedSet = removedNames == null
-                    ? Collections.emptySet()
-                    : new HashSet<>(removedNames);
+            Set<String> stagedFiles = Store.stagedAdditions().keySet();
+            List<String> removedNames = Store.stagedRemovals();
+            Set<String> removedSet = new HashSet<>(removedNames);
 
             for (String fileName : files) {
                 boolean untracked = (!cf.containsKey(fileName) || removedSet.contains(fileName))
@@ -602,112 +504,27 @@ public class Repository {
 
             File file = Utils.join(CWD, fileName);
 
-            byte[] content = Utils.readContents(
-                    Utils.join(blob_DIR, targetFiles.get(fileName))
-            );
+            byte[] content = Store.getBlob(targetFiles.get(fileName));
 
             Utils.writeContents(file, content);
         }
 
         currHead = full_id;
 
-        String currentBranch = Utils.readContentsAsString(
-                Utils.join(GITLET_DIR, "HEAD")
-        );
+        String currentBranch = Store.getHead();
 
-        Utils.writeContents(
-                Utils.join(ref, currentBranch),
-                full_id
-        );
-
+        Store.begin();
+        Store.setRef(currentBranch, full_id);
         resetStage();
         resetRemoval();
+        Store.commitTx();
     }
 
     /**
      * Implement the BFS to find the latest common ancestor
      */
     public static String find_latest_ances_id(String curr_head, String bran_head) {
-        Map<String, Integer> currDist = new HashMap<>();
-        Queue<String> q = new ArrayDeque<>();
-        q.add(curr_head);
-        currDist.put(curr_head, 0);
-
-        while (!q.isEmpty()) {
-            String currId = q.poll();
-            List<String> parents = Commit.return_parents(currId);
-            for (String p : parents) {
-                if (p != null && !currDist.containsKey(p)) {
-                    currDist.put(p, currDist.get(currId) + 1);
-                    q.add(p);
-                }
-            }
-        }
-
-        /* Every common ancestor, not the one closest to the given branch. */
-        Set<String> common = new HashSet<>();
-        Queue<String> qBran = new ArrayDeque<>();
-        Set<String> visitedBran = new HashSet<>();
-        qBran.add(bran_head);
-        visitedBran.add(bran_head);
-
-        while (!qBran.isEmpty()) {
-            String currId = qBran.poll();
-            if (currDist.containsKey(currId)) {
-                common.add(currId);
-            }
-            List<String> parents = Commit.return_parents(currId);
-            for (String p : parents) {
-                if (p != null && !visitedBran.contains(p)) {
-                    visitedBran.add(p);
-                    qBran.add(p);
-                }
-            }
-        }
-        if (common.isEmpty()) {
-            return null;
-        }
-
-        /* Drop a common ancestor that another common ancestor can reach. */
-        Set<String> dominated = new HashSet<>();
-        for (String candidate : common) {
-            Queue<String> walk = new ArrayDeque<>();
-            Set<String> seen = new HashSet<>();
-            for (String p : Commit.return_parents(candidate)) {
-                if (p != null) {
-                    walk.add(p);
-                }
-            }
-            while (!walk.isEmpty()) {
-                String id = walk.poll();
-                if (!seen.add(id)) {
-                    continue;
-                }
-                if (common.contains(id)) {
-                    dominated.add(id);
-                }
-                for (String p : Commit.return_parents(id)) {
-                    if (p != null && !seen.contains(p)) {
-                        walk.add(p);
-                    }
-                }
-            }
-        }
-
-        String best = null;
-        int bestDistance = Integer.MAX_VALUE;
-        for (String candidate : common) {
-            if (dominated.contains(candidate)) {
-                continue;
-            }
-            int distance = currDist.get(candidate);
-            if (best == null || distance < bestDistance
-                    || (distance == bestDistance && candidate.compareTo(best) < 0)) {
-                best = candidate;
-                bestDistance = distance;
-            }
-        }
-        return best;
+        return Store.splitPoint(curr_head, bran_head);
     }
 
     /**
@@ -720,7 +537,7 @@ public class Repository {
         if (lcaId == null) {
             return null;
         }
-        return readObject(join(Commit_DIR, lcaId), Commit.class);
+        return Store.getCommit(lcaId);
     }
 
     private static boolean wouldBeOverwrittenOrDeleted(String sHash, String cHash, String gHash) {
@@ -761,15 +578,9 @@ public class Repository {
      */
     public static void merge(String branch) throws IOException {
         // 1. Check uncommitted changes
-        File stageFiles = join(stage_DIR, "files");
-        boolean hasStagedAdditions = false;
-        if (stageFiles.exists()) {
-            TreeMap<String, String> m = readObject(stageFiles, TreeMap.class);
-            if (!m.isEmpty()) {
-                hasStagedAdditions = true;
-            }
-        }
-        List<String> removedFiles = plainFilenamesIn(removal);
+        TreeMap<String, String> stageFiles = Store.stagedAdditions();
+        boolean hasStagedAdditions = !stageFiles.isEmpty();
+        List<String> removedFiles = Store.stagedRemovals();
         boolean hasStagedRemovals = removedFiles != null && !removedFiles.isEmpty();
         if (hasStagedAdditions || hasStagedRemovals) {
             System.out.println("You have uncommitted changes.");
@@ -777,9 +588,9 @@ public class Repository {
         }
 
         // 2. Check branch existence
-        File branchFile = Utils.join(ref, branch.replace('/', File.separatorChar));
-        String curr_Head = Utils.readContentsAsString(HEAD);
-        if (!branchFile.exists() || branchFile.isDirectory()) {
+        String branch_head_hash = Store.getRef(branch);
+        String curr_Head = Store.getHead();
+        if (branch_head_hash == null) {
             System.out.println("A branch with that name does not exist.");
             System.exit(0);
         }
@@ -790,15 +601,14 @@ public class Repository {
             System.exit(0);
         }
 
-        String current_head_hash = Utils.readContentsAsString(Utils.join(ref, curr_Head));
-        String branch_head_hash = Utils.readContentsAsString(branchFile);
+        String current_head_hash = Store.getRef(curr_Head);
 
         // 4. Find split point
         String split_id = find_latest_ances_id(current_head_hash, branch_head_hash);
-        Commit splitCommit = (split_id != null) ? readObject(join(Commit_DIR, split_id), Commit.class) : null;
+        Commit splitCommit = (split_id != null) ? Store.getCommit(split_id) : null;
 
-        Commit currCommit = readObject(join(Commit_DIR, current_head_hash), Commit.class);
-        Commit givenCommit = readObject(join(Commit_DIR, branch_head_hash), Commit.class);
+        Commit currCommit = Store.getCommit(current_head_hash);
+        Commit givenCommit = Store.getCommit(branch_head_hash);
 
         TreeMap<String, String> splitMap = (splitCommit != null) ? splitCommit.getNameToHash() : new TreeMap<>();
         TreeMap<String, String> currMap = currCommit.getNameToHash();
@@ -808,9 +618,7 @@ public class Repository {
         if (cwdFiles == null) {
             cwdFiles = new ArrayList<>();
         }
-        Set<String> stagedAdd = (stageFiles.exists())
-                ? readObject(stageFiles, TreeMap.class).keySet()
-                : Collections.emptySet();
+        Set<String> stagedAdd = stageFiles.keySet();
 
         // 5. Special exits
         if (split_id != null && split_id.equals(branch_head_hash)) {
@@ -853,6 +661,7 @@ public class Repository {
         TreeMap<String, String> newCommitMap = new TreeMap<>(currMap);
         boolean hasConflict = false;
 
+        Store.begin();
         for (String file : allFiles) {
             String sHash = splitMap.get(file);
             String cHash = currMap.get(file);
@@ -863,7 +672,7 @@ public class Repository {
                 if (Objects.equals(sHash, cHash)) {
                     if (gHash != null && !Objects.equals(sHash, gHash)) {
                         // Rule 1: modified in given, not modified in curr
-                        byte[] content = readContents(join(blob_DIR, gHash));
+                        byte[] content = Store.getBlob(gHash);
                         writeContents(join(CWD, file), content);
                         Blob.saveToStage(file);
                         newCommitMap.put(file, gHash);
@@ -873,10 +682,7 @@ public class Repository {
                         if (cwdF.exists()) {
                             cwdF.delete();
                         }
-                        File r = join(removal, file);
-                        if (!r.exists()) {
-                            r.createNewFile();
-                        }
+                        Store.stageRemove(file);
                         newCommitMap.remove(file);
                     }
                     // if sHash == gHash: unmodified in both, do nothing
@@ -891,13 +697,13 @@ public class Repository {
                     } else {
                         // Rule 8: Conflict
                         hasConflict = true;
-                        byte[] cContent = (cHash != null) ? readContents(join(blob_DIR, cHash)) : new byte[0];
-                        byte[] gContent = (gHash != null) ? readContents(join(blob_DIR, gHash)) : new byte[0];
+                        byte[] cContent = (cHash != null) ? Store.getBlob(cHash) : new byte[0];
+                        byte[] gContent = (gHash != null) ? Store.getBlob(gHash) : new byte[0];
                         byte[] conflictContent = buildConflict(cContent, gContent);
                         writeContents(join(CWD, file), conflictContent);
                         Blob.saveToStage(file);
                         String conflictBlobHash = Utils.hash(conflictContent);
-                        writeContents(join(blob_DIR, conflictBlobHash), conflictContent);
+                        Store.putBlob(conflictBlobHash, conflictContent);
                         newCommitMap.put(file, conflictBlobHash);
                     }
                 }
@@ -907,7 +713,7 @@ public class Repository {
                     // Rule 4: present only in curr -> stays as is
                 } else if (cHash == null && gHash != null) {
                     // Rule 5: present only in given -> checkout & stage
-                    byte[] content = readContents(join(blob_DIR, gHash));
+                    byte[] content = Store.getBlob(gHash);
                     writeContents(join(CWD, file), content);
                     Blob.saveToStage(file);
                     newCommitMap.put(file, gHash);
@@ -917,13 +723,13 @@ public class Repository {
                     } else {
                         // Rule 8: Conflict
                         hasConflict = true;
-                        byte[] cContent = readContents(join(blob_DIR, cHash));
-                        byte[] gContent = readContents(join(blob_DIR, gHash));
+                        byte[] cContent = Store.getBlob(cHash);
+                        byte[] gContent = Store.getBlob(gHash);
                         byte[] conflictContent = buildConflict(cContent, gContent);
                         writeContents(join(CWD, file), conflictContent);
                         Blob.saveToStage(file);
                         String conflictBlobHash = Utils.hash(conflictContent);
-                        writeContents(join(blob_DIR, conflictBlobHash), conflictContent);
+                        Store.putBlob(conflictBlobHash, conflictContent);
                         newCommitMap.put(file, conflictBlobHash);
                     }
                 }
@@ -931,11 +737,11 @@ public class Repository {
         }
 
         // 8. Check if anything changed
-        File fs = join(stage_DIR, "files");
-        List<String> rml = plainFilenamesIn(removal);
-        boolean hasStaged = (fs.exists() && !readObject(fs, TreeMap.class).isEmpty())
-                || (rml != null && !rml.isEmpty());
+        TreeMap<String, String> fs = Store.stagedAdditions();
+        List<String> rml = Store.stagedRemovals();
+        boolean hasStaged = (!fs.isEmpty()) || (rml != null && !rml.isEmpty());
         if (!hasStaged && newCommitMap.equals(currMap)) {
+            Store.rollback();
             System.out.println("No changes added to the commit.");
             System.exit(0);
         }
@@ -946,15 +752,15 @@ public class Repository {
         byte[] text = serialize(mergeCommit);
         mergeCommit.setSelfHash(Utils.hash(text));
 
-        File ncf = join(Commit_DIR, mergeCommit.getSelfHash());
-        writeObject(ncf, mergeCommit);
+        Store.putCommit(mergeCommit);
 
         currHead = mergeCommit.getSelfHash();
-        File currBranchFile = join(ref, curr_Head);
-        writeContents(currBranchFile, currHead);
+        Store.setRef(curr_Head, currHead);
 
         resetStage();
         resetRemoval();
+
+        Store.commitTx();
 
         if (hasConflict) {
             System.out.println("Encountered a merge conflict.");
@@ -968,16 +774,12 @@ public class Repository {
      * @param path remote directory path
      */
     public static void add_remote(String name, String path) {
-        if (!remotes_DIR.exists()) {
-            remotes_DIR.mkdir();
-        }
-        File remoteFile = join(remotes_DIR, name);
-        if (remoteFile.exists()) {
+        if (Store.getRemote(name) != null) {
             System.out.println("A remote with that name already exists.");
             System.exit(0);
         }
         String normalizedPath = path.replace('/', File.separatorChar);
-        writeContents(remoteFile, normalizedPath);
+        Store.addRemote(name, normalizedPath);
     }
 
     /**
@@ -986,12 +788,11 @@ public class Repository {
      * @param name remote name
      */
     public static void rm_remote(String name) {
-        File remoteFile = join(remotes_DIR, name);
-        if (!remoteFile.exists()) {
+        if (Store.getRemote(name) == null) {
             System.out.println("A remote with that name does not exist.");
             System.exit(0);
         }
-        remoteFile.delete();
+        Store.removeRemote(name);
     }
 
     /**
@@ -1001,25 +802,21 @@ public class Repository {
      * @param branchName remote branch name
      */
     public static void push(String remoteName, String branchName) throws IOException {
-        File remoteFile = join(remotes_DIR, remoteName);
-        if (!remoteFile.exists()) {
+        String remotePath = Store.getRemote(remoteName);
+        if (remotePath == null) {
             System.out.println("Remote directory not found.");
             System.exit(0);
         }
-        String remotePath = readContentsAsString(remoteFile);
         File remoteGitlet = new File(remotePath);
         if (!remoteGitlet.exists() || !remoteGitlet.isDirectory()) {
             System.out.println("Remote directory not found.");
             System.exit(0);
         }
 
-        File remoteCommits = join(remoteGitlet, "commits");
-        File remoteBlobs = join(remoteGitlet, "blobs");
-        File remoteRef = join(remoteGitlet, "ref");
-        File remoteBranchFile = join(remoteRef, branchName);
+        Store.Session remoteStore = Store.open(remoteGitlet);
+        String remoteHead = remoteStore.getRef(branchName);
 
-        if (remoteBranchFile.exists()) {
-            String remoteHead = readContentsAsString(remoteBranchFile);
+        if (remoteHead != null) {
             boolean isAncestor = false;
             Queue<String> q = new ArrayDeque<>();
             Set<String> visited = new HashSet<>();
@@ -1045,22 +842,20 @@ public class Repository {
         }
 
         // Copy commits and blobs from local to remote
+        remoteStore.begin();
         Queue<String> qSync = new ArrayDeque<>();
         Set<String> visitedSync = new HashSet<>();
         qSync.add(currHead);
         visitedSync.add(currHead);
         while (!qSync.isEmpty()) {
             String id = qSync.poll();
-            File localCommitFile = join(Commit_DIR, id);
-            File remoteCommitFile = join(remoteCommits, id);
-            if (!remoteCommitFile.exists()) {
-                Commit c = readObject(localCommitFile, Commit.class);
-                writeObject(remoteCommitFile, c);
+            if (!remoteStore.hasObject(id)) {
+                Commit c = Store.getCommit(id);
+                remoteStore.putCommit(c);
                 for (String blobHash : c.getNameToHash().values()) {
-                    File localBlob = join(blob_DIR, blobHash);
-                    File remoteBlob = join(remoteBlobs, blobHash);
-                    if (localBlob.exists() && !remoteBlob.exists()) {
-                        writeContents(remoteBlob, readContents(localBlob));
+                    byte[] localBlob = Store.getBlob(blobHash);
+                    if (localBlob != null && !remoteStore.hasObject(blobHash)) {
+                        remoteStore.putBlob(blobHash, localBlob);
                     }
                 }
             }
@@ -1072,10 +867,9 @@ public class Repository {
             }
         }
 
-        if (!remoteRef.exists()) {
-            remoteRef.mkdirs();
-        }
-        writeContents(remoteBranchFile, currHead);
+        remoteStore.setRef(branchName, currHead);
+        remoteStore.commitTx();
+        remoteStore.close();
     }
 
     /**
@@ -1085,28 +879,25 @@ public class Repository {
      * @param branchName remote branch name
      */
     public static void fetch(String remoteName, String branchName) throws IOException {
-        File remoteFile = join(remotes_DIR, remoteName);
-        if (!remoteFile.exists()) {
+        String remotePath = Store.getRemote(remoteName);
+        if (remotePath == null) {
             System.out.println("Remote directory not found.");
             System.exit(0);
         }
-        String remotePath = readContentsAsString(remoteFile);
         File remoteGitlet = new File(remotePath);
         if (!remoteGitlet.exists() || !remoteGitlet.isDirectory()) {
             System.out.println("Remote directory not found.");
             System.exit(0);
         }
 
-        File remoteCommits = join(remoteGitlet, "commits");
-        File remoteBlobs = join(remoteGitlet, "blobs");
-        File remoteRef = join(remoteGitlet, "ref");
-        File remoteBranchFile = join(remoteRef, branchName);
-        if (!remoteBranchFile.exists()) {
+        Store.Session remoteStore = Store.open(remoteGitlet);
+        String remoteHead = remoteStore.getRef(branchName);
+        if (remoteHead == null) {
             System.out.println("That remote does not have that branch.");
             System.exit(0);
         }
 
-        String remoteHead = readContentsAsString(remoteBranchFile);
+        Store.begin();
         Queue<String> q = new ArrayDeque<>();
         Set<String> visited = new HashSet<>();
         q.add(remoteHead);
@@ -1114,21 +905,18 @@ public class Repository {
 
         while (!q.isEmpty()) {
             String id = q.poll();
-            File remoteCommitFile = join(remoteCommits, id);
-            File localCommitFile = join(Commit_DIR, id);
-            if (remoteCommitFile.exists() && !localCommitFile.exists()) {
-                Commit c = readObject(remoteCommitFile, Commit.class);
-                writeObject(localCommitFile, c);
+            if (remoteStore.hasObject(id) && !Store.hasObject(id)) {
+                Commit c = remoteStore.getCommit(id);
+                Store.putCommit(c);
                 for (String blobHash : c.getNameToHash().values()) {
-                    File remoteBlob = join(remoteBlobs, blobHash);
-                    File localBlob = join(blob_DIR, blobHash);
-                    if (remoteBlob.exists() && !localBlob.exists()) {
-                        writeContents(localBlob, readContents(remoteBlob));
+                    byte[] remoteBlob = remoteStore.getBlob(blobHash);
+                    if (remoteBlob != null && !Store.hasObject(blobHash)) {
+                        Store.putBlob(blobHash, remoteBlob);
                     }
                 }
             }
-            if (remoteCommitFile.exists()) {
-                Commit c = readObject(remoteCommitFile, Commit.class);
+            if (remoteStore.hasObject(id)) {
+                Commit c = remoteStore.getCommit(id);
                 String p1 = c.getParent();
                 if (p1 != null && !visited.contains(p1)) {
                     visited.add(p1);
@@ -1142,12 +930,9 @@ public class Repository {
             }
         }
 
-        File localRemoteDir = join(ref, remoteName);
-        if (!localRemoteDir.exists()) {
-            localRemoteDir.mkdirs();
-        }
-        File localRemoteBranchFile = join(localRemoteDir, branchName);
-        writeContents(localRemoteBranchFile, remoteHead);
+        Store.setRef(remoteName + "/" + branchName, remoteHead);
+        Store.commitTx();
+        remoteStore.close();
     }
 
     /**
@@ -1161,27 +946,9 @@ public class Repository {
         merge(remoteName + "/" + branchName);
     }
 
-    /** Branch names, including remote-tracking names stored as ref/remote/branch. */
+    /** Branch names, including remote-tracking names stored in ref table. */
     private static List<String> allBranchNames() {
-        List<String> names = new ArrayList<>();
-        collectBranchNames(ref, "", names);
-        Collections.sort(names);
-        return names;
-    }
-
-    private static void collectBranchNames(File dir, String prefix, List<String> names) {
-        File[] kids = dir.listFiles();
-        if (kids == null) {
-            return;
-        }
-        for (File kid : kids) {
-            String name = prefix.isEmpty() ? kid.getName() : prefix + "/" + kid.getName();
-            if (kid.isDirectory()) {
-                collectBranchNames(kid, name, names);
-            } else {
-                names.add(name);
-            }
-        }
+        return Store.allRefNames();
     }
 
     /** Spec conflict text. File bytes are appended raw, so a missing side is empty. */

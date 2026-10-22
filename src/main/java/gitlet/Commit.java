@@ -18,6 +18,12 @@ import static gitlet.Repository.*;
  */
 public class Commit implements Serializable, Dumpable {
     /**
+     * Pinned to the value Java computed for the pre-SQLite class, so the
+     * serialized bytes (and therefore every commit id) stay the same even
+     * though accessor methods were added for the storage layer.
+     */
+    private static final long serialVersionUID = -1296720244208386047L;
+    /**
      * Instance variables of the Commit class representing metadata and file mappings.
      */
 
@@ -86,13 +92,9 @@ public class Commit implements Serializable, Dumpable {
         first.timestamp = 0L;
         byte[] text = Utils.serialize(first);
         first.self_hash = Utils.hash(text);
-        File fir = Utils.join(Commit_DIR, first.self_hash);
-        fir.createNewFile();
-        Utils.writeObject(fir, first);
+        Store.putCommit(first);
         currHead = first.self_hash;
-        File h = Utils.join(ref, "master");
-        h.createNewFile();
-        Utils.writeContents(h, currHead);
+        Store.setRef("master", currHead);
         return first.self_hash;
     }
 
@@ -102,13 +104,11 @@ public class Commit implements Serializable, Dumpable {
     public static String commitInCurrBran(String me) throws IOException {
         /* Parent snapshot, then staged additions, then staged removals. */
         TreeMap<String, String> snapshot = new TreeMap<>(currCommitFiles_map());
-        File fs = Utils.join(stage_DIR, "files");
-        TreeMap<String, String> staged = null;
-        if (fs.exists()) {
-            staged = Utils.readObject(fs, TreeMap.class);
+        TreeMap<String, String> staged = Store.stagedAdditions();
+        if (!staged.isEmpty()) {
             snapshot.putAll(staged);
         }
-        List<String> removed = Utils.plainFilenamesIn(removal);
+        List<String> removed = Store.stagedRemovals();
         if (removed != null) {
             for (String name : removed) {
                 snapshot.remove(name);
@@ -120,24 +120,16 @@ public class Commit implements Serializable, Dumpable {
         }
 
         Commit nc = new Commit(me, snapshot, currHead);
-        File currBranch = Utils.join(ref, Utils.readContentsAsString(HEAD));
+        String currBranch = Store.getHead();
         byte[] text = Utils.serialize(nc);
         nc.self_hash = Utils.hash(text);
         currHead = nc.self_hash;
-        if (staged != null) {
-            for (String name : staged.keySet()) {
-                String blobId = staged.get(name);
-                File f = Utils.join(stage_DIR, blobId);
-                File copy = Utils.join(blob_DIR, blobId);
-                Utils.writeContents(copy, Utils.readContents(f));
-            }
-        }
-        File ncf = Utils.join(Commit_DIR, nc.self_hash);
-        Utils.writeObject(ncf, nc);
-        ncf.createNewFile();
-        Utils.writeContents(currBranch, nc.self_hash);
+        Store.begin();
+        Store.putCommit(nc);
+        Store.setRef(currBranch, nc.self_hash);
         resetStage();
         resetRemoval();
+        Store.commitTx();
         return currHead;
     }
 
@@ -145,12 +137,11 @@ public class Commit implements Serializable, Dumpable {
      * create branch
      */
     public static void branch(String branch) throws IOException {
-        File b = Utils.join(ref, branch);
-        if (b.exists()) {
+        if (Store.getRef(branch) != null) {
             System.out.println("A branch with that name already exists.");
             System.exit(0);
         }else {
-            Utils.writeContents(b, currHead);
+            Store.setRef(branch, currHead);
         }
     }
 
@@ -162,26 +153,25 @@ public class Commit implements Serializable, Dumpable {
      */
     public static void rm_branch(String name) {
         /* if the branch exists*/
-        File bran_rev = Utils.join(ref, name.replace('/', File.separatorChar));
-        if (!bran_rev.isFile()) {
+        if (Store.getRef(name) == null) {
             System.out.println("A branch with that name does not exist.");
             System.exit(0);
         }
         /* if is the current branch */
-        String curr_bran = Utils.readContentsAsString(Utils.join(GITLET_DIR, "HEAD"));
+        String curr_bran = Store.getHead();
         if (curr_bran.equals(name)) {
             System.out.println("Cannot remove the current branch.");
             System.exit(0);
         }
 
-        bran_rev.delete();
+        Store.deleteRef(name);
     }
 
     /**
      * get the current Commit's map
      */
     public static TreeMap<String, String> currCommitFiles_map() {
-        Commit c = Utils.readObject(Utils.join(Commit_DIR, currHead), Commit.class);
+        Commit c = Store.getCommit(currHead);
         return c.nameToHash;
     }
 
@@ -204,8 +194,26 @@ public class Commit implements Serializable, Dumpable {
         if (id == null) {
             return new TreeMap<>();
         }
-        Commit c = Utils.readObject(Utils.join(Commit_DIR, id), Commit.class);
+        Commit c = Store.getCommit(id);
         return c.nameToHash;
+    }
+
+    /**
+     * Returns the commit message.
+     *
+     * @return the commit message
+     */
+    public String getMessage() {
+        return this.message;
+    }
+
+    /**
+     * Returns the commit timestamp in epoch milliseconds.
+     *
+     * @return the commit timestamp
+     */
+    public long getTimestamp() {
+        return this.timestamp;
     }
 
     /**
@@ -274,8 +282,7 @@ public class Commit implements Serializable, Dumpable {
      */
     public static List<String> return_parents(String id) {
         List<String> l = new ArrayList<>();
-        File f = Utils.join(Commit_DIR, id);
-        Commit c = Utils.readObject(f, Commit.class);
+        Commit c = Store.getCommit(id);
         l.add(c.parent);
         if (c.secondParent != null) {
             l.add(c.secondParent);

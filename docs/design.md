@@ -94,3 +94,151 @@ merge 的八条规则还在 `Repository.merge` 里：当前和给定相同就保
 4. **为什么采用 SHA-256**：
    - **抗碰撞安全性**：SHA-1 算法已存在已知的实际碰撞攻击（如 SHAttered 攻击），无法保证长期的密码学完整性。SHA-256 提供 256 位安全强度，能够有效防御碰撞与原像攻击。
    - **解耦与架构演进**：通过接口抽象使 Gitlet 的对象寻址机制与具体的哈希算法解耦，与真实 Git 社区向 SHA-256（Object Format）过渡的标准演进方向一致。
+
+## SQLite storage
+
+为了提升存储可靠性、实现原子性事务保障并简化存储结构，SyncVault 将基于文件系统的逐文件存储模式替换为单文件内嵌 SQLite 数据库（`.gitlet/gitlet.db`）。初始化后，`.gitlet/` 目录下仅包含唯一的 `gitlet.db` 文件，且采用默认的 `DELETE` 日志模式（非 WAL），确保无额外附加文件（如 `-wal`、`-shm`）。
+
+### 1. 数据库表结构 (Schema)
+
+```sql
+-- 存储版本库核心对象：blob 原文与序列化后的 Commit（写入前已设置 self_hash，与旧版 writeObject 字节完全一致）
+CREATE TABLE IF NOT EXISTS object (
+    hash TEXT PRIMARY KEY,
+    type TEXT NOT NULL,
+    data BLOB NOT NULL
+);
+
+-- 提交元数据表，便于快速检索提交信息、时间戳与根据 message/前缀查询
+CREATE TABLE IF NOT EXISTS commit_meta (
+    hash TEXT PRIMARY KEY,
+    message TEXT NOT NULL,
+    timestamp INTEGER NOT NULL
+);
+
+-- 提交父子关系表：idx=0 表示第一父提交，idx=1 表示第二父提交（初始提交无记录）
+CREATE TABLE IF NOT EXISTS commit_parent (
+    child TEXT NOT NULL,
+    parent TEXT NOT NULL,
+    idx INTEGER NOT NULL,
+    PRIMARY KEY (child, idx)
+);
+CREATE INDEX IF NOT EXISTS idx_commit_parent_parent ON commit_parent(parent);
+
+-- 分支引用表（包含本地分支与形如 'origin/master' 的远程跟踪分支）
+CREATE TABLE IF NOT EXISTS ref (
+    name TEXT PRIMARY KEY,
+    hash TEXT NOT NULL
+);
+
+-- 核心元数据（如 key='HEAD' 指向当前活动分支名）
+CREATE TABLE IF NOT EXISTS meta (
+    key TEXT PRIMARY KEY,
+    value TEXT NOT NULL
+);
+
+-- 暂存区新增文件映射（文件名 -> blob 哈希）
+CREATE TABLE IF NOT EXISTS stage_add (
+    name TEXT PRIMARY KEY,
+    hash TEXT NOT NULL
+);
+
+-- 暂存区删除文件记录
+CREATE TABLE IF NOT EXISTS stage_rm (
+    name TEXT PRIMARY KEY
+);
+
+-- 远程仓库配置表
+CREATE TABLE IF NOT EXISTS remote (
+    name TEXT PRIMARY KEY,
+    path TEXT NOT NULL
+);
+```
+
+### 2. 递归 CTE 分叉点（split point）查询与 Criss-Cross 合并正确性
+
+在合并两个分支时，寻找最近公共祖先（Split Point / LCA）是核心算法。SyncVault 使用单个包含递归公共表表达式（CTE）的 SQL 查询完成计算：
+
+```sql
+WITH RECURSIVE
+  ca(h, d) AS (
+    SELECT ?, 0
+    UNION
+    SELECT p.parent, ca.d + 1 FROM commit_parent p JOIN ca ON p.child = ca.h
+  ),
+  ga(h) AS (
+    SELECT ?
+    UNION
+    SELECT p.parent FROM commit_parent p JOIN ga ON p.child = ga.h
+  ),
+  common(h, d) AS (
+    SELECT h, MIN(d) FROM ca WHERE h IN (SELECT h FROM ga) GROUP BY h
+  ),
+  below(h) AS (
+    SELECT p.parent FROM commit_parent p JOIN common c ON p.child = c.h
+    UNION
+    SELECT p.parent FROM commit_parent p JOIN below b ON p.child = b.h
+  )
+SELECT h FROM common WHERE h NOT IN (SELECT h FROM below) ORDER BY d, h LIMIT 1;
+```
+
+**为什么在 Criss-Cross 下依然正确**：
+- `ca(h, d)` 从当前分支头遍历所有父节点并记录到达各祖先的最短距离 `d`。
+- `ga(h)` 从给定分支头遍历其所有祖先节点。
+- `common(h, d)` 计算交集，即所有公共祖先及离当前头的最短距离。
+- `below(h)` 递归收集所有能被某个公共祖先所到达的祖先（即被“支配”的更旧祖先）。
+- `common WHERE h NOT IN (SELECT h FROM below)` 关键性地排除了任何能被其他公共祖先到达的祖先节点。在 criss-cross 合并场景中，两个分支分别交叉合并了对方之前的节点，可能存在多个不可相互到达的候选公共祖先。通过排除 `below` 节点，留下的都是极小非支配候选节点；再通过 `ORDER BY d, h LIMIT 1` 选择离当前头距离最近的候选节点，并在距离相等时由哈希字典序平局断开，保证了结果的确定性与正确性。
+
+### 3. 第一父节点链（First-parent log CTE）
+
+`log` 命令需沿当前活动分支的第一父提交（idx=0）反向追溯历史。通过如下递归 CTE 查询一次性取得完整有序链条：
+
+```sql
+WITH RECURSIVE chain(h, step) AS (
+  SELECT ?, 0
+  UNION ALL
+  SELECT p.parent, chain.step + 1
+  FROM commit_parent p JOIN chain ON p.child = chain.h
+  WHERE p.idx = 0
+)
+SELECT h FROM chain ORDER BY step;
+```
+
+随后逐个加载对应 Commit 打印日志输出，与原输出格式严格保持一致。
+
+### 4. 事务边界设计 (Transaction Boundaries)
+
+SyncVault 针对所有写操作定义了严密的事务边界，采用支持重入的深度计数器管理（`begin()` / `commitTx()` / `rollback()` / `transaction(...)`）：
+
+- **Commit (`commitInCurrBran`)**：将新 Commit 对象写入 `object`、写入 `commit_meta`、插入 `commit_parent`、更新活动分支 `ref` 指针以及清空暂存区表（`clearStage`）全部包裹在单一事务中。
+- **Merge (`merge`)**：在冲突检测与规则应用阶段，冲突 blob 的写入、暂存区表的更新、新 merge commit 及其父节点写入、活动分支移动以及暂存区重置全部包裹在单个事务内。因为 merge 内部会调用 `saveToStage` 与 `reset`，重入事务机制确保只有最外层提交生效。
+- **Reset (`reset`)**：包括目标提交校验后的引用指针更新（`setRef`）与暂存区清空。
+- **Checkout Branch (`check_branch`)**：分支切换后的 HEAD 引用更新（`setHead`）与暂存区清空。
+- **Push / Fetch (`push` / `fetch`)**：
+  - `fetch`：拉取的所有 missing commits、blob 写入与远程跟踪分支 ref（如 `origin/master`）的更新包裹在本地数据库的一个事务中。
+  - `push`：推送到远端的所有 missing commits、blob 写入与远端目标分支 ref 更新包裹在远端数据库的一个事务中。
+- **工作区与文件系统写入**：注意工作区（CWD）文件的创建、覆盖与删除属于文件系统 I/O，位于数据库事务外部执行，因此崩溃时工作区可能已部分更新，但数据库（ref/HEAD/暂存区/提交）要么全部生效要么全部不生效。
+- **回滚方式**：为了保持原有代码结构，业务代码里只写 `Store.begin()` ... `Store.commitTx()`，没有额外的 try/catch。进程在 `commitTx()` 之前因异常或 `System.exit` 结束时，SQLite 的 rollback journal 会把未提交的事务丢弃（下次打开数据库时自动回滚），效果与显式 rollback 相同。
+
+### 5. 暂存区表结构与设计理由
+
+暂存新增存储在 `stage_add (name, hash)` 表，暂存删除存储在 `stage_rm (name)` 表。在 `add` 执行时，文件内容立即作为 blob 写入 `object` 表（类似 Git 的对象数据库设计，使用 `INSERT OR IGNORE` 去重）。
+- **理由**：
+  1. 避免在 `.gitlet/stage/` 与 `.gitlet/rm/` 中频繁创建/删除小文件与目录，消除了文件系统遍历与并发文件锁定的开销。
+  2. 暂存区操作与提交/重置等操作可以通过数据库事务原子化处理，避免进程中断时留下孤立文件或不一致状态。
+
+### 6. 为何选择 SQLite 而非 MySQL
+
+SyncVault 定位于多设备分布式资产同步与版本控制系统：
+1. **单文件零配置 (Embedded Single File)**：每个本地仓库只需一个 `.gitlet/gitlet.db` 文件，无需安装、配置与维护独立的数据库服务进程（daemon）。
+2. **离线高可用 (Offline-First)**：版本控制要求每个节点在无网络连接、无中央服务端的情况下能够独立执行 init, add, commit, branch, merge, reset, log 等全部操作。
+3. **轻量与跨平台**：通过 `sqlite-jdbc` 跨平台驱动，SyncVault 可以直接打包为便携的单一可执行 Fat JAR，随处运行。
+4. **强 ACID 事务与可靠性**：SQLite 经过长期工业验证，提供完整的 ACID 事务与崩溃恢复能力，在进程异常退出时不会造成元数据损坏。
+5. **便捷备份与迁移**：复制或同步单个 `.gitlet/gitlet.db` 文件即可完成整个版本库元数据的迁移与备份。
+
+### 7. 提交 ID 与内容哈希保持不变
+
+- Commit ID 的计算机制完全保持不变：在 `self_hash` 字段为 `null` 时序列化该 Commit 对象，并计算其内容哈希（`Utils.hash(Utils.serialize(commit))`）。
+- Java 序列化字节里包含类的 `serialVersionUID`。为了让存储层访问提交信息，`Commit` 新增了 `getMessage()` / `getTimestamp()`，这会改变 Java 自动计算的 UID，从而改变所有 commit id。因此 `Commit` 显式固定 `serialVersionUID = -1296720244208386047L`（即迁移前类的自动计算值），初始提交的 id 仍是 `15fd3b34…dd01`，与文件存储版本逐字节一致（有单元测试 `CommitIdTest` 守护）。
+- Blob ID 依然严格等于文件原始字节的内容哈希（`Utils.hash(fileBytes)`）。
+- 对象寻址机制与历史数据兼容，保证了计算的纯粹性与可验证性。

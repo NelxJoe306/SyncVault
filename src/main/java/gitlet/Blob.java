@@ -43,51 +43,23 @@ public class Blob implements Serializable{
     public static void saveToStage(String name) throws IOException {
         File f = join(CWD, name);  /* target file to stage*/
         Blob b = new Blob(f);
-        TreeMap<String, String> m;
 
-        File stageFile = join(stage_DIR, b.fHash);
-        File filelist = join(stage_DIR, "files");
-
-
-        if (Utils.join(removal, name).exists()) {
-            Utils.join(removal, name).delete();
-        }
-
-        if (filelist.exists()) {
-           m = Utils.readObject(filelist, java.util.TreeMap.class);
-        } else {
-            m = new TreeMap<>();
-            filelist.createNewFile();
-        }
-        m.put(name, b.fHash);
-        Utils.writeObject(filelist, m);
-
-        if (!stageFile.exists()) {
-            Utils.writeContents(stageFile, b.text);
-        }
+        Store.unstageRemove(name);
+        Store.stageAdd(name, b.fHash);
+        Store.putBlob(b.fHash, b.text);
     }
 
     /**
      * reset the stage after commiting
      */
     public static void resetStage() {
-        File[] files = stage_DIR.listFiles();
-        if (files != null) {
-            for (File file : files) {
-                file.delete();
-            }
-        }
+        Store.clearStageAdd();
     }
 
     /**
      * reset the stage after commiting
      */
     public static void resetRemoval() {
-        File[] files = removal.listFiles();
-        if (files != null) {
-            for (File file : files) {
-                file.delete();
-            }
-        }
+        Store.clearStageRm();
     }
 }

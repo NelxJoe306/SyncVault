@@ -1,0 +1,737 @@
+package gitlet;
+
+import java.io.ByteArrayInputStream;
+import java.io.File;
+import java.io.IOException;
+import java.io.ObjectInputStream;
+import java.sql.*;
+import java.util.*;
+
+/**
+ * Embedded SQLite storage layer for Gitlet.
+ * Provides a static JDBC wrapper for the current repository and a Session
+ * instance for opening remote or temporary databases.
+ */
+public class Store {
+
+    private static Session defaultSession;
+
+    @FunctionalInterface
+    public interface ThrowingRunnable {
+        void run() throws Exception;
+    }
+
+    public static synchronized Session getDefault() {
+        if (defaultSession == null) {
+            defaultSession = open(Repository.GITLET_DIR);
+        }
+        return defaultSession;
+    }
+
+    public static synchronized void setDefault(Session session) {
+        defaultSession = session;
+    }
+
+    public static synchronized void closeDefault() {
+        if (defaultSession != null) {
+            defaultSession.close();
+            defaultSession = null;
+        }
+    }
+
+    public static synchronized void useDir(File dir) {
+        closeDefault();
+        defaultSession = open(dir);
+    }
+
+    public static Session open(File gitletDir) {
+        File file = (gitletDir.getName().endsWith(".db")) ? gitletDir : new File(gitletDir, "gitlet.db");
+        return new Session(file);
+    }
+
+    /* Static delegate methods operating on default repository */
+
+    public static void createSchema() {
+        getDefault().createSchema();
+    }
+
+    public static void putBlob(String hash, byte[] bytes) {
+        getDefault().putBlob(hash, bytes);
+    }
+
+    public static byte[] getBlob(String hash) {
+        return getDefault().getBlob(hash);
+    }
+
+    public static boolean hasObject(String hash) {
+        return getDefault().hasObject(hash);
+    }
+
+    public static void putCommit(Commit c) {
+        getDefault().putCommit(c);
+    }
+
+    public static Commit getCommit(String hash) {
+        return getDefault().getCommit(hash);
+    }
+
+    public static List<String> allCommitIds() {
+        return getDefault().allCommitIds();
+    }
+
+    public static List<String> commitIdsWithMessage(String msg) {
+        return getDefault().commitIdsWithMessage(msg);
+    }
+
+    public static List<String> commitIdsWithPrefix(String prefix) {
+        return getDefault().commitIdsWithPrefix(prefix);
+    }
+
+    public static String getRef(String name) {
+        return getDefault().getRef(name);
+    }
+
+    public static void setRef(String name, String hash) {
+        getDefault().setRef(name, hash);
+    }
+
+    public static void deleteRef(String name) {
+        getDefault().deleteRef(name);
+    }
+
+    public static List<String> allRefNames() {
+        return getDefault().allRefNames();
+    }
+
+    public static String getHead() {
+        return getDefault().getHead();
+    }
+
+    public static void setHead(String branch) {
+        getDefault().setHead(branch);
+    }
+
+    public static TreeMap<String, String> stagedAdditions() {
+        return getDefault().stagedAdditions();
+    }
+
+    public static void stageAdd(String name, String hash) {
+        getDefault().stageAdd(name, hash);
+    }
+
+    public static void unstageAdd(String name) {
+        getDefault().unstageAdd(name);
+    }
+
+    public static List<String> stagedRemovals() {
+        return getDefault().stagedRemovals();
+    }
+
+    public static void stageRemove(String name) {
+        getDefault().stageRemove(name);
+    }
+
+    public static void unstageRemove(String name) {
+        getDefault().unstageRemove(name);
+    }
+
+    public static void clearStageAdd() {
+        getDefault().clearStageAdd();
+    }
+
+    public static void clearStageRm() {
+        getDefault().clearStageRm();
+    }
+
+    public static void clearStage() {
+        getDefault().clearStage();
+    }
+
+    public static String getRemote(String name) {
+        return getDefault().getRemote(name);
+    }
+
+    public static void addRemote(String name, String path) {
+        getDefault().addRemote(name, path);
+    }
+
+    public static void removeRemote(String name) {
+        getDefault().removeRemote(name);
+    }
+
+    public static Map<String, Integer> ancestors(String head) {
+        return getDefault().ancestors(head);
+    }
+
+    public static List<String> firstParentChain(String head) {
+        return getDefault().firstParentChain(head);
+    }
+
+    public static String splitPoint(String currHead, String branchHead) {
+        return getDefault().splitPoint(currHead, branchHead);
+    }
+
+    public static void begin() {
+        getDefault().begin();
+    }
+
+    public static void commitTx() {
+        getDefault().commitTx();
+    }
+
+    public static void rollback() {
+        getDefault().rollback();
+    }
+
+    public static void transaction(ThrowingRunnable r) {
+        getDefault().transaction(r);
+    }
+
+    /**
+     * Session representing a connection to an individual Gitlet database.
+     */
+    public static class Session implements AutoCloseable {
+
+        private final File dbFile;
+        private Connection conn;
+        private int txDepth = 0;
+
+        public Session(File dbFile) {
+            this.dbFile = dbFile;
+        }
+
+        public synchronized Connection getConnection() {
+            try {
+                if (conn == null || conn.isClosed()) {
+                    File parent = dbFile.getParentFile();
+                    if (parent != null && !parent.exists()) {
+                        parent.mkdirs();
+                    }
+                    conn = DriverManager.getConnection("jdbc:sqlite:" + dbFile.getAbsolutePath());
+                    try (Statement stmt = conn.createStatement()) {
+                        stmt.execute("PRAGMA journal_mode = DELETE;");
+                        stmt.execute("PRAGMA busy_timeout = 5000;");
+                    }
+                }
+                return conn;
+            } catch (SQLException e) {
+                throw new GitletException(e.getMessage());
+            }
+        }
+
+        @Override
+        public synchronized void close() {
+            if (conn != null) {
+                try {
+                    if (!conn.isClosed()) {
+                        conn.close();
+                    }
+                } catch (SQLException ignored) {
+                }
+                conn = null;
+            }
+        }
+
+        public void createSchema() {
+            String[] statements = new String[]{
+                    "CREATE TABLE IF NOT EXISTS object (hash TEXT PRIMARY KEY, type TEXT NOT NULL, data BLOB NOT NULL);",
+                    "CREATE TABLE IF NOT EXISTS commit_meta (hash TEXT PRIMARY KEY, message TEXT NOT NULL, timestamp INTEGER NOT NULL);",
+                    "CREATE TABLE IF NOT EXISTS commit_parent (child TEXT NOT NULL, parent TEXT NOT NULL, idx INTEGER NOT NULL, PRIMARY KEY (child, idx));",
+                    "CREATE INDEX IF NOT EXISTS idx_commit_parent_parent ON commit_parent(parent);",
+                    "CREATE TABLE IF NOT EXISTS ref (name TEXT PRIMARY KEY, hash TEXT NOT NULL);",
+                    "CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);",
+                    "CREATE TABLE IF NOT EXISTS stage_add (name TEXT PRIMARY KEY, hash TEXT NOT NULL);",
+                    "CREATE TABLE IF NOT EXISTS stage_rm (name TEXT PRIMARY KEY);",
+                    "CREATE TABLE IF NOT EXISTS remote (name TEXT PRIMARY KEY, path TEXT NOT NULL);"
+            };
+            try (Statement stmt = getConnection().createStatement()) {
+                for (String sql : statements) {
+                    stmt.execute(sql);
+                }
+            } catch (SQLException e) {
+                throw new GitletException(e.getMessage());
+            }
+        }
+
+        public void putBlob(String hash, byte[] bytes) {
+            String sql = "INSERT OR IGNORE INTO object (hash, type, data) VALUES (?, 'blob', ?)";
+            try (PreparedStatement pstmt = getConnection().prepareStatement(sql)) {
+                pstmt.setString(1, hash);
+                pstmt.setBytes(2, bytes);
+                pstmt.executeUpdate();
+            } catch (SQLException e) {
+                throw new GitletException(e.getMessage());
+            }
+        }
+
+        public byte[] getBlob(String hash) {
+            String sql = "SELECT data FROM object WHERE hash = ?";
+            try (PreparedStatement pstmt = getConnection().prepareStatement(sql)) {
+                pstmt.setString(1, hash);
+                try (ResultSet rs = pstmt.executeQuery()) {
+                    if (rs.next()) {
+                        return rs.getBytes(1);
+                    }
+                    return null;
+                }
+            } catch (SQLException e) {
+                throw new GitletException(e.getMessage());
+            }
+        }
+
+        public boolean hasObject(String hash) {
+            String sql = "SELECT 1 FROM object WHERE hash = ?";
+            try (PreparedStatement pstmt = getConnection().prepareStatement(sql)) {
+                pstmt.setString(1, hash);
+                try (ResultSet rs = pstmt.executeQuery()) {
+                    return rs.next();
+                }
+            } catch (SQLException e) {
+                throw new GitletException(e.getMessage());
+            }
+        }
+
+        public void putCommit(Commit c) {
+            byte[] data = Utils.serialize(c);
+            try {
+                try (PreparedStatement pstmt = getConnection().prepareStatement(
+                        "INSERT OR REPLACE INTO object (hash, type, data) VALUES (?, 'commit', ?)")) {
+                    pstmt.setString(1, c.getSelfHash());
+                    pstmt.setBytes(2, data);
+                    pstmt.executeUpdate();
+                }
+                try (PreparedStatement pstmt = getConnection().prepareStatement(
+                        "INSERT OR REPLACE INTO commit_meta (hash, message, timestamp) VALUES (?, ?, ?)")) {
+                    pstmt.setString(1, c.getSelfHash());
+                    pstmt.setString(2, c.getMessage());
+                    pstmt.setLong(3, c.getTimestamp());
+                    pstmt.executeUpdate();
+                }
+                try (PreparedStatement pstmt = getConnection().prepareStatement(
+                        "DELETE FROM commit_parent WHERE child = ?")) {
+                    pstmt.setString(1, c.getSelfHash());
+                    pstmt.executeUpdate();
+                }
+                if (c.getParent() != null) {
+                    try (PreparedStatement pstmt = getConnection().prepareStatement(
+                            "INSERT INTO commit_parent (child, parent, idx) VALUES (?, ?, 0)")) {
+                        pstmt.setString(1, c.getSelfHash());
+                        pstmt.setString(2, c.getParent());
+                        pstmt.executeUpdate();
+                    }
+                }
+                if (c.getSecondParent() != null) {
+                    try (PreparedStatement pstmt = getConnection().prepareStatement(
+                            "INSERT INTO commit_parent (child, parent, idx) VALUES (?, ?, 1)")) {
+                        pstmt.setString(1, c.getSelfHash());
+                        pstmt.setString(2, c.getSecondParent());
+                        pstmt.executeUpdate();
+                    }
+                }
+            } catch (SQLException e) {
+                throw new GitletException(e.getMessage());
+            }
+        }
+
+        public Commit getCommit(String hash) {
+            String sql = "SELECT data FROM object WHERE hash = ? AND type = 'commit'";
+            try (PreparedStatement pstmt = getConnection().prepareStatement(sql)) {
+                pstmt.setString(1, hash);
+                try (ResultSet rs = pstmt.executeQuery()) {
+                    if (rs.next()) {
+                        byte[] data = rs.getBytes(1);
+                        try (ObjectInputStream in = new ObjectInputStream(new ByteArrayInputStream(data))) {
+                            return (Commit) in.readObject();
+                        } catch (IOException | ClassNotFoundException e) {
+                            throw new GitletException(e.getMessage());
+                        }
+                    }
+                    return null;
+                }
+            } catch (SQLException e) {
+                throw new GitletException(e.getMessage());
+            }
+        }
+
+        public List<String> allCommitIds() {
+            String sql = "SELECT hash FROM commit_meta ORDER BY hash ASC";
+            List<String> list = new ArrayList<>();
+            try (PreparedStatement pstmt = getConnection().prepareStatement(sql);
+                 ResultSet rs = pstmt.executeQuery()) {
+                while (rs.next()) {
+                    list.add(rs.getString(1));
+                }
+                return list;
+            } catch (SQLException e) {
+                throw new GitletException(e.getMessage());
+            }
+        }
+
+        public List<String> commitIdsWithMessage(String msg) {
+            String sql = "SELECT hash FROM commit_meta WHERE message = ? ORDER BY hash ASC";
+            List<String> list = new ArrayList<>();
+            try (PreparedStatement pstmt = getConnection().prepareStatement(sql)) {
+                pstmt.setString(1, msg);
+                try (ResultSet rs = pstmt.executeQuery()) {
+                    while (rs.next()) {
+                        list.add(rs.getString(1));
+                    }
+                    return list;
+                }
+            } catch (SQLException e) {
+                throw new GitletException(e.getMessage());
+            }
+        }
+
+        public List<String> commitIdsWithPrefix(String prefix) {
+            String sql = "SELECT hash FROM commit_meta WHERE substr(hash, 1, length(?)) = ? ORDER BY hash ASC";
+            List<String> list = new ArrayList<>();
+            try (PreparedStatement pstmt = getConnection().prepareStatement(sql)) {
+                pstmt.setString(1, prefix);
+                pstmt.setString(2, prefix);
+                try (ResultSet rs = pstmt.executeQuery()) {
+                    while (rs.next()) {
+                        list.add(rs.getString(1));
+                    }
+                    return list;
+                }
+            } catch (SQLException e) {
+                throw new GitletException(e.getMessage());
+            }
+        }
+
+        public String getRef(String name) {
+            String sql = "SELECT hash FROM ref WHERE name = ?";
+            try (PreparedStatement pstmt = getConnection().prepareStatement(sql)) {
+                pstmt.setString(1, name);
+                try (ResultSet rs = pstmt.executeQuery()) {
+                    if (rs.next()) {
+                        return rs.getString(1);
+                    }
+                    return null;
+                }
+            } catch (SQLException e) {
+                throw new GitletException(e.getMessage());
+            }
+        }
+
+        public void setRef(String name, String hash) {
+            String sql = "INSERT OR REPLACE INTO ref (name, hash) VALUES (?, ?)";
+            try (PreparedStatement pstmt = getConnection().prepareStatement(sql)) {
+                pstmt.setString(1, name);
+                pstmt.setString(2, hash);
+                pstmt.executeUpdate();
+            } catch (SQLException e) {
+                throw new GitletException(e.getMessage());
+            }
+        }
+
+        public void deleteRef(String name) {
+            String sql = "DELETE FROM ref WHERE name = ?";
+            try (PreparedStatement pstmt = getConnection().prepareStatement(sql)) {
+                pstmt.setString(1, name);
+                pstmt.executeUpdate();
+            } catch (SQLException e) {
+                throw new GitletException(e.getMessage());
+            }
+        }
+
+        public List<String> allRefNames() {
+            String sql = "SELECT name FROM ref ORDER BY name ASC";
+            List<String> list = new ArrayList<>();
+            try (PreparedStatement pstmt = getConnection().prepareStatement(sql);
+                 ResultSet rs = pstmt.executeQuery()) {
+                while (rs.next()) {
+                    list.add(rs.getString(1));
+                }
+                return list;
+            } catch (SQLException e) {
+                throw new GitletException(e.getMessage());
+            }
+        }
+
+        public String getHead() {
+            String sql = "SELECT value FROM meta WHERE key = 'HEAD'";
+            try (PreparedStatement pstmt = getConnection().prepareStatement(sql);
+                 ResultSet rs = pstmt.executeQuery()) {
+                if (rs.next()) {
+                    return rs.getString(1);
+                }
+                return null;
+            } catch (SQLException e) {
+                throw new GitletException(e.getMessage());
+            }
+        }
+
+        public void setHead(String branch) {
+            String sql = "INSERT OR REPLACE INTO meta (key, value) VALUES ('HEAD', ?)";
+            try (PreparedStatement pstmt = getConnection().prepareStatement(sql)) {
+                pstmt.setString(1, branch);
+                pstmt.executeUpdate();
+            } catch (SQLException e) {
+                throw new GitletException(e.getMessage());
+            }
+        }
+
+        public TreeMap<String, String> stagedAdditions() {
+            String sql = "SELECT name, hash FROM stage_add ORDER BY name ASC";
+            TreeMap<String, String> map = new TreeMap<>();
+            try (PreparedStatement pstmt = getConnection().prepareStatement(sql);
+                 ResultSet rs = pstmt.executeQuery()) {
+                while (rs.next()) {
+                    map.put(rs.getString(1), rs.getString(2));
+                }
+                return map;
+            } catch (SQLException e) {
+                throw new GitletException(e.getMessage());
+            }
+        }
+
+        public void stageAdd(String name, String hash) {
+            String sql = "INSERT OR REPLACE INTO stage_add (name, hash) VALUES (?, ?)";
+            try (PreparedStatement pstmt = getConnection().prepareStatement(sql)) {
+                pstmt.setString(1, name);
+                pstmt.setString(2, hash);
+                pstmt.executeUpdate();
+            } catch (SQLException e) {
+                throw new GitletException(e.getMessage());
+            }
+        }
+
+        public void unstageAdd(String name) {
+            String sql = "DELETE FROM stage_add WHERE name = ?";
+            try (PreparedStatement pstmt = getConnection().prepareStatement(sql)) {
+                pstmt.setString(1, name);
+                pstmt.executeUpdate();
+            } catch (SQLException e) {
+                throw new GitletException(e.getMessage());
+            }
+        }
+
+        public List<String> stagedRemovals() {
+            String sql = "SELECT name FROM stage_rm ORDER BY name ASC";
+            List<String> list = new ArrayList<>();
+            try (PreparedStatement pstmt = getConnection().prepareStatement(sql);
+                 ResultSet rs = pstmt.executeQuery()) {
+                while (rs.next()) {
+                    list.add(rs.getString(1));
+                }
+                return list;
+            } catch (SQLException e) {
+                throw new GitletException(e.getMessage());
+            }
+        }
+
+        public void stageRemove(String name) {
+            String sql = "INSERT OR IGNORE INTO stage_rm (name) VALUES (?)";
+            try (PreparedStatement pstmt = getConnection().prepareStatement(sql)) {
+                pstmt.setString(1, name);
+                pstmt.executeUpdate();
+            } catch (SQLException e) {
+                throw new GitletException(e.getMessage());
+            }
+        }
+
+        public void unstageRemove(String name) {
+            String sql = "DELETE FROM stage_rm WHERE name = ?";
+            try (PreparedStatement pstmt = getConnection().prepareStatement(sql)) {
+                pstmt.setString(1, name);
+                pstmt.executeUpdate();
+            } catch (SQLException e) {
+                throw new GitletException(e.getMessage());
+            }
+        }
+
+        public void clearStageAdd() {
+            try (Statement stmt = getConnection().createStatement()) {
+                stmt.execute("DELETE FROM stage_add");
+            } catch (SQLException e) {
+                throw new GitletException(e.getMessage());
+            }
+        }
+
+        public void clearStageRm() {
+            try (Statement stmt = getConnection().createStatement()) {
+                stmt.execute("DELETE FROM stage_rm");
+            } catch (SQLException e) {
+                throw new GitletException(e.getMessage());
+            }
+        }
+
+        public void clearStage() {
+            clearStageAdd();
+            clearStageRm();
+        }
+
+        public String getRemote(String name) {
+            String sql = "SELECT path FROM remote WHERE name = ?";
+            try (PreparedStatement pstmt = getConnection().prepareStatement(sql)) {
+                pstmt.setString(1, name);
+                try (ResultSet rs = pstmt.executeQuery()) {
+                    if (rs.next()) {
+                        return rs.getString(1);
+                    }
+                    return null;
+                }
+            } catch (SQLException e) {
+                throw new GitletException(e.getMessage());
+            }
+        }
+
+        public void addRemote(String name, String path) {
+            String sql = "INSERT INTO remote (name, path) VALUES (?, ?)";
+            try (PreparedStatement pstmt = getConnection().prepareStatement(sql)) {
+                pstmt.setString(1, name);
+                pstmt.setString(2, path);
+                pstmt.executeUpdate();
+            } catch (SQLException e) {
+                throw new GitletException(e.getMessage());
+            }
+        }
+
+        public void removeRemote(String name) {
+            String sql = "DELETE FROM remote WHERE name = ?";
+            try (PreparedStatement pstmt = getConnection().prepareStatement(sql)) {
+                pstmt.setString(1, name);
+                pstmt.executeUpdate();
+            } catch (SQLException e) {
+                throw new GitletException(e.getMessage());
+            }
+        }
+
+        public Map<String, Integer> ancestors(String head) {
+            if (head == null) {
+                return Collections.emptyMap();
+            }
+            String sql = "WITH RECURSIVE anc(h, d) AS ("
+                    + "  SELECT ?, 0 "
+                    + "  UNION "
+                    + "  SELECT p.parent, anc.d + 1 FROM commit_parent p JOIN anc ON p.child = anc.h"
+                    + ") "
+                    + "SELECT h, MIN(d) FROM anc GROUP BY h;";
+            Map<String, Integer> map = new HashMap<>();
+            try (PreparedStatement pstmt = getConnection().prepareStatement(sql)) {
+                pstmt.setString(1, head);
+                try (ResultSet rs = pstmt.executeQuery()) {
+                    while (rs.next()) {
+                        map.put(rs.getString(1), rs.getInt(2));
+                    }
+                    return map;
+                }
+            } catch (SQLException e) {
+                throw new GitletException(e.getMessage());
+            }
+        }
+
+        public List<String> firstParentChain(String head) {
+            if (head == null) {
+                return Collections.emptyList();
+            }
+            String sql = "WITH RECURSIVE chain(h, step) AS ("
+                    + "  SELECT ?, 0 "
+                    + "  UNION ALL "
+                    + "  SELECT p.parent, chain.step + 1 FROM commit_parent p JOIN chain ON p.child = chain.h "
+                    + "  WHERE p.idx = 0"
+                    + ") "
+                    + "SELECT h FROM chain ORDER BY step;";
+            List<String> list = new ArrayList<>();
+            try (PreparedStatement pstmt = getConnection().prepareStatement(sql)) {
+                pstmt.setString(1, head);
+                try (ResultSet rs = pstmt.executeQuery()) {
+                    while (rs.next()) {
+                        list.add(rs.getString(1));
+                    }
+                    return list;
+                }
+            } catch (SQLException e) {
+                throw new GitletException(e.getMessage());
+            }
+        }
+
+        public String splitPoint(String currHead, String branchHead) {
+            if (currHead == null || branchHead == null) {
+                return null;
+            }
+            String sql = "WITH RECURSIVE "
+                    + "  ca(h, d) AS (SELECT ?, 0 UNION SELECT p.parent, ca.d + 1 FROM commit_parent p JOIN ca ON p.child = ca.h), "
+                    + "  ga(h)    AS (SELECT ? UNION SELECT p.parent FROM commit_parent p JOIN ga ON p.child = ga.h), "
+                    + "  common(h, d) AS (SELECT h, MIN(d) FROM ca WHERE h IN (SELECT h FROM ga) GROUP BY h), "
+                    + "  below(h) AS (SELECT p.parent FROM commit_parent p JOIN common c ON p.child = c.h "
+                    + "               UNION SELECT p.parent FROM commit_parent p JOIN below b ON p.child = b.h) "
+                    + "SELECT h FROM common WHERE h NOT IN (SELECT h FROM below) ORDER BY d, h LIMIT 1;";
+            try (PreparedStatement pstmt = getConnection().prepareStatement(sql)) {
+                pstmt.setString(1, currHead);
+                pstmt.setString(2, branchHead);
+                try (ResultSet rs = pstmt.executeQuery()) {
+                    if (rs.next()) {
+                        return rs.getString(1);
+                    }
+                    return null;
+                }
+            } catch (SQLException e) {
+                throw new GitletException(e.getMessage());
+            }
+        }
+
+        public synchronized void begin() {
+            try {
+                if (txDepth == 0) {
+                    getConnection().setAutoCommit(false);
+                }
+                txDepth++;
+            } catch (SQLException e) {
+                throw new GitletException(e.getMessage());
+            }
+        }
+
+        public synchronized void commitTx() {
+            try {
+                if (txDepth == 1) {
+                    getConnection().commit();
+                    getConnection().setAutoCommit(true);
+                }
+            } catch (SQLException e) {
+                try {
+                    getConnection().rollback();
+                    getConnection().setAutoCommit(true);
+                } catch (SQLException ignored) {
+                }
+                txDepth = 0;
+                throw new GitletException(e.getMessage());
+            } finally {
+                if (txDepth > 0) {
+                    txDepth--;
+                }
+            }
+        }
+
+        public synchronized void rollback() {
+            try {
+                if (txDepth > 0) {
+                    getConnection().rollback();
+                    getConnection().setAutoCommit(true);
+                    txDepth = 0;
+                }
+            } catch (SQLException e) {
+                throw new GitletException(e.getMessage());
+            }
+        }
+
+        public void transaction(ThrowingRunnable r) {
+            begin();
+            try {
+                r.run();
+                commitTx();
+            } catch (Throwable t) {
+                rollback();
+                if (t instanceof RuntimeException) {
+                    throw (RuntimeException) t;
+                } else if (t instanceof Error) {
+                    throw (Error) t;
+                } else {
+                    throw new GitletException(t.getMessage());
+                }
+            }
+        }
+    }
+}

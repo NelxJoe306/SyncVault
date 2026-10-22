@@ -31,6 +31,8 @@ SyncVault 是一个轻量级的类似 Git 的版本控制系统（VCS）。本�
   - `pull`：从远程拉取并合并至当前分支。
 - **可插拔哈希架构**：
   - 定义了 `HashFunction` 抽象接口，提供可插拔的哈希算法支持（已包含 SHA-256 与 SHA-1 实现）。
+- **SQLite 存储引擎**：
+  - 版本库全部元数据、提交、引用、暂存区及对象均存储于 `.gitlet/gitlet.db`（SQLite），提供 ACID 事务保证与单文件嵌入式存储，离线环境下无需运行任何外部数据库服务。
 
 ## 目录结构
 
@@ -94,7 +96,7 @@ scripts/run-integration-tests.sh
 
 ## 路线图
 
-- [ ] SQLite 存储
+- [x] SQLite 存储
 - [ ] Netty push/pull 多设备同步
 - [ ] 三方合并改进
 - [ ] gc 垃圾回收

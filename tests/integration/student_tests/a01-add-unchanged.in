@@ -1,0 +1,14 @@
+# Adding a file identical to the HEAD version must not stage it.
+I definitions.inc
+> init
+<<<
++ f.txt wug.txt
+> add f.txt
+<<<
+> commit "adds f"
+<<<
+> add f.txt
+<<<
+> commit "nothing"
+No changes added to the commit.
+<<<

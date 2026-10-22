@@ -1,0 +1,63 @@
+# Criss-cross whose two latest common ancestors are at different distances
+# from the current head. The closer one is the second parent of the given
+# branch's merge. Searching from the given branch hits the other ancestor
+# first and would delete f.txt. The latest ancestor conflicts instead.
+I definitions.inc
+> init
+<<<
+> branch given
+<<<
+> checkout given
+<<<
++ f.txt wug.txt
+> add f.txt
+<<<
+> commit "Add f.txt containing wug.txt"
+<<<
+> branch B
+<<<
+> checkout master
+<<<
++ f.txt notwug.txt
+> add f.txt
+<<<
+> commit "Add f.txt containing notwug.txt"
+<<<
+> checkout given
+<<<
+> merge master
+Encountered a merge conflict.
+<<<
+= f.txt conflict_b1.txt
++ f.txt notwug.txt
+> add f.txt
+<<<
+> commit "Reset f to notwug.txt"
+<<<
+> rm f.txt
+<<<
+> commit "given now empty."
+<<<
+> checkout B
+<<<
++ g.txt wug2.txt
+> add g.txt
+<<<
+> commit "Added g.txt"
+<<<
+> checkout master
+<<<
+> merge B
+Encountered a merge conflict.
+<<<
+= f.txt conflict_b2.txt
++ f.txt wug.txt
+> add f.txt
+<<<
+> commit "Reset f to wug.txt"
+<<<
+> merge given
+Encountered a merge conflict.
+<<<
+= f.txt conflict_b3.txt
+= g.txt wug2.txt

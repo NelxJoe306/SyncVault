@@ -1,0 +1,28 @@
+# Modified in current and deleted in given: the missing side is empty bytes.
+I definitions.inc
+> init
+<<<
++ f.txt notwug.txt
+> add f.txt
+<<<
+> commit "base"
+<<<
+> branch other
+<<<
++ f.txt wug.txt
+> add f.txt
+<<<
+> commit "master changes f"
+<<<
+> checkout other
+<<<
+> rm f.txt
+<<<
+> commit "other deletes f"
+<<<
+> checkout master
+<<<
+> merge other
+Encountered a merge conflict.
+<<<
+= f.txt conf_del.txt

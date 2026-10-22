@@ -1,0 +1,13 @@
+# Commit a non-UTF-8 file, overwrite it, and checkout the committed bytes.
+I definitions.inc
+> init
+<<<
++ b.bin bin.dat
+> add b.bin
+<<<
+> commit "binary"
+<<<
++ b.bin wug.txt
+> checkout -- b.bin
+<<<
+= b.bin bin.dat

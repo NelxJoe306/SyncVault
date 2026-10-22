@@ -1,0 +1,52 @@
+# Latest common ancestor is B, not the older common ancestor A.
+# Splitting at A would conflict on g.txt. Splitting at B keeps master's g.txt.
+I definitions.inc
+> init
+<<<
++ f.txt wug.txt
+> add f.txt
+<<<
+> commit "A"
+<<<
+> branch other
+<<<
++ g.txt notwug.txt
+> add g.txt
+<<<
+> commit "B"
+<<<
+> branch side
+<<<
+> checkout side
+<<<
++ h.txt wug.txt
+> add h.txt
+<<<
+> commit "Y1"
+<<<
++ h2.txt wug.txt
+> add h2.txt
+<<<
+> commit "Y2"
+<<<
+> checkout other
+<<<
++ k.txt wug.txt
+> add k.txt
+<<<
+> commit "X1"
+<<<
+> merge side
+<<<
+> checkout master
+<<<
++ g.txt wug2.txt
+> add g.txt
+<<<
+> commit "C"
+<<<
+> merge other
+<<<
+= g.txt wug2.txt
+= k.txt wug.txt
+= h.txt wug.txt

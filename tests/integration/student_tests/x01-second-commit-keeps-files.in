@@ -1,0 +1,23 @@
+# A later commit keeps files it inherited, and rm of one of them sticks.
+I definitions.inc
+> init
+<<<
++ f.txt wug.txt
+> add f.txt
+<<<
+> commit "first"
+<<<
++ g.txt notwug.txt
+> add g.txt
+<<<
+> commit "second"
+<<<
+= f.txt wug.txt
+= g.txt notwug.txt
+> rm f.txt
+<<<
+* f.txt
+> commit "removed f"
+<<<
+* f.txt
+= g.txt notwug.txt

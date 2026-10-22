@@ -1,0 +1,7 @@
+# The already-initialized message includes the final period.
+I definitions.inc
+> init
+<<<
+> init
+A Gitlet version-control system already exists in the current directory.
+<<<

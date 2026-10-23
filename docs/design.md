@@ -60,6 +60,13 @@ merge 的八条规则还在 `Repository.merge` 里：当前和给定相同就保
 
 `fetch` 把远程分支能到达的提交和 blob 按原始字节拷进来，并写下 `ref/<remote>/<分支>`。`push` 要求远程该分支不存在，或者它的头从本地头能沿父节点走到；否则 `Please pull down remote changes before pushing.` 拷贝同样用字节。`pull` 是 fetch 之后 merge 这个远程跟踪分支。`check_branch` 用文件是否存在判断 `R1/master`，不再只用 `plainFilenamesIn(ref)`。
 
+远程支持两种地址形式：
+1. **本地路径远程（Path Remote）**：形如 `../D1/.gitlet` 的本地文件系统目录，直接通过 `Store.open(remoteGitlet)` 打开远端 SQLite 会话并在单个事务内拷贝缺失的 Commit 与 Blob。
+2. **Netty TCP 网络远程（Network Remote）**：形如 `host:port` 或 `netty://host:port`（由 `Repository.isNetworkRemote` 识别）。远端通过 `serve [port]`（默认端口 `9418`）启动 `NettyServer`，客户端 `push` / `fetch` 通过 `NettyClient` 建立 TCP 连接。
+   - **传输帧与协议（`SyncMessage`）**：基于 Netty `LengthFieldBasedFrameDecoder` / `LengthFieldPrepender`（4 字节长度前缀）与 Java 序列化消息传输。
+   - **Fetch 流程**：`HELLO` / `HELLO_OK` 握手后，客户端发送 `FETCH_REQ(branch)`；服务端返回 `FETCH_TIP(tip)`（若分支不存在则返回 `ERROR`，客户端打印 `That remote does not have that branch.`）；客户端发送本地已有的提交哈希集合 `FETCH_HAVE`，服务端通过 BFS 计算缺失的 Commit 序列化字节及关联 Blob 并以 `FETCH_OBJECTS` 返回；客户端在单一 SQLite 事务中写入对象并更新 `ref/<remote>/<branch>`，最后回复 `ACK`。
+   - **Push 流程**：握手后客户端发送 `PUSH_REQ(branch, localTip)`；服务端返回远端当前分支头与已有提交集合 `PUSH_TIP`；客户端复用 BFS 校验远端分支头是否为本地分支头的祖先（否则打印 `Please pull down remote changes before pushing.`），收集缺失的 Commit 与 Blob 通过 `PUSH_OBJECTS` 发送；服务端在单一 SQLite 事务中写入对象并更新分支引用，回复 `ACK`。
+
 ## 以后可以改，这次没有改
 
 这些是以后的结构建议，当前代码没有拆成新类：

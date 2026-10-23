@@ -778,7 +778,7 @@ public class Repository {
             System.out.println("A remote with that name already exists.");
             System.exit(0);
         }
-        String normalizedPath = path.replace('/', File.separatorChar);
+        String normalizedPath = isNetworkRemote(path) ? path : path.replace('/', File.separatorChar);
         Store.addRemote(name, normalizedPath);
     }
 
@@ -806,6 +806,13 @@ public class Repository {
         if (remotePath == null) {
             System.out.println("Remote directory not found.");
             System.exit(0);
+        }
+        if (isNetworkRemote(remotePath)) {
+            String headBranch = Store.getHead();
+            String localHead = (headBranch != null && Store.getRef(headBranch) != null)
+                    ? Store.getRef(headBranch) : currHead;
+            NettyClient.push(remotePath, branchName, localHead);
+            return;
         }
         File remoteGitlet = new File(remotePath);
         if (!remoteGitlet.exists() || !remoteGitlet.isDirectory()) {
@@ -884,6 +891,10 @@ public class Repository {
             System.out.println("Remote directory not found.");
             System.exit(0);
         }
+        if (isNetworkRemote(remotePath)) {
+            NettyClient.fetch(remoteName, remotePath, branchName);
+            return;
+        }
         File remoteGitlet = new File(remotePath);
         if (!remoteGitlet.exists() || !remoteGitlet.isDirectory()) {
             System.out.println("Remote directory not found.");
@@ -944,6 +955,59 @@ public class Repository {
     public static void pull(String remoteName, String branchName) throws IOException {
         fetch(remoteName, branchName);
         merge(remoteName + "/" + branchName);
+    }
+
+    /**
+     * Starts a Netty TCP sync server bound to the current repository on the given port.
+     *
+     * @param port TCP port (0 for an ephemeral free port)
+     * @return running NettyServer handle
+     */
+    public static NettyServer serve(int port) {
+        return new NettyServer(Store.getDefault().getDbFile(), port).start();
+    }
+
+    public static NettyServer serve() {
+        return serve(NettyServer.DEFAULT_PORT);
+    }
+
+    static boolean isNetworkRemote(String remotePath) {
+        if (remotePath == null) {
+            return false;
+        }
+        if (remotePath.startsWith("netty://")) {
+            return true;
+        }
+        if (remotePath.contains("/") || remotePath.contains("\\")) {
+            return false;
+        }
+        return remotePath.matches("^(\\[[0-9a-fA-F:]+\\]|[A-Za-z0-9._-]+):\\d{1,5}$");
+    }
+
+    static boolean isAncestor(String head, String target) {
+        if (head == null || target == null) {
+            return false;
+        }
+        Queue<String> q = new ArrayDeque<>();
+        Set<String> visited = new HashSet<>();
+        q.add(head);
+        visited.add(head);
+        while (!q.isEmpty()) {
+            String id = q.poll();
+            if (id.equals(target)) {
+                return true;
+            }
+            if (!Store.hasObject(id)) {
+                continue;
+            }
+            for (String p : Commit.return_parents(id)) {
+                if (p != null && !visited.contains(p)) {
+                    visited.add(p);
+                    q.add(p);
+                }
+            }
+        }
+        return false;
     }
 
     /** Branch names, including remote-tracking names stored in ref table. */

@@ -24,11 +24,12 @@ SyncVault 是一个轻量级的类似 Git 的版本控制系统（VCS）。本�
   - `reset`：将当前分支 HEAD 回滚至指定提交并恢复工作区。
   - `merge`：将指定分支合并到当前分支，支持冲突处理与分叉点（split point）定位。
 - **远程仓库基础命令**：
-  - `add-remote`：添加远程仓库信息与关联路径。
+  - `add-remote`：添加远程仓库信息与关联路径或网络地址（支持本地目录路径与 `host:port` / `netty://host:port`）。
   - `rm-remote`：移除远程仓库配置。
   - `push`：将本地分支推送到远程仓库。
   - `fetch`：从远程仓库拉取提交与分支历史。
   - `pull`：从远程拉取并合并至当前分支。
+  - `serve [port]`：启动基于 Netty 的 TCP 同步服务端（默认端口 `9418`）。
 - **可插拔哈希架构**：
   - 定义了 `HashFunction` 抽象接口，提供可插拔的哈希算法支持（已包含 SHA-256 与 SHA-1 实现）。
 - **SQLite 存储引擎**：
@@ -80,6 +81,16 @@ java -jar target/syncvault-0.1.0-SNAPSHOT.jar init
 java -cp target/classes gitlet.Main init
 ```
 
+启动 Netty 远程同步服务端并从客户端关联同步：
+```bash
+# 服务端仓库目录下启动服务（默认监听 9418 端口）
+java -jar target/syncvault-0.1.0-SNAPSHOT.jar serve 9418
+
+# 客户端仓库添加远程地址并执行 push / fetch / pull
+java -jar target/syncvault-0.1.0-SNAPSHOT.jar add-remote origin localhost:9418
+java -jar target/syncvault-0.1.0-SNAPSHOT.jar push origin master
+```
+
 ## 测试
 
 ### 单元测试
@@ -97,7 +108,7 @@ scripts/run-integration-tests.sh
 ## 路线图
 
 - [x] SQLite 存储
-- [ ] Netty push/pull 多设备同步
+- [x] Netty push/pull 多设备同步
 - [ ] 三方合并改进
 - [ ] gc 垃圾回收
 - [ ] Web UI (Vis.js 提交图)

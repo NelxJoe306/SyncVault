@@ -42,6 +42,7 @@
         <div class="toolbar">
           <button class="pill-btn" id="btn-focus-head" type="button" title="Select and focus HEAD commit">HEAD</button>
           <button class="pill-btn" id="btn-fit-graph" type="button" title="Fit DAG to canvas">Fit</button>
+          <button class="pill-btn" id="btn-zoom-reset" type="button" title="Reset zoom to readable 1:1 scale">1:1</button>
           <button class="pill-btn icon-pill" id="btn-zoom-in" type="button" title="Zoom in" aria-label="Zoom in">+</button>
           <button class="pill-btn icon-pill" id="btn-zoom-out" type="button" title="Zoom out" aria-label="Zoom out">-</button>
         </div>
@@ -53,8 +54,9 @@
 
       <div class="graph-caption">
         <div class="legend">
-          <span class="legend-item"><i class="dot dot-acc"></i>HEAD / branch tip</span>
-          <span class="legend-item"><i class="dot dot-node"></i>Commit</span>
+          <span class="legend-item"><i class="dot dot-acc"></i>HEAD / master</span>
+          <span class="legend-item"><i class="dot dot-branch"></i>Branch lanes</span>
+          <span class="legend-item"><i class="dot dot-merge"></i>Merge</span>
           <span class="legend-item"><i class="line-sample line-solid"></i>1st parent</span>
           <span class="legend-item"><i class="line-sample line-dashed"></i>2nd parent (merge)</span>
         </div>

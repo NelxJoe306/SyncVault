@@ -6,6 +6,12 @@
   --ink:#0f1112; --ink-2:#3a3f44; --ink-3:#6b7177;
   --line:rgba(15,17,18,.12); --line-2:rgba(15,17,18,.06);
   --accent:#4f7a8c; --accent-soft:#e3edf1; --mark:#ffe08a;
+  --b-sage:#3d7a5a; --b-sage-soft:#e5f2eb;
+  --b-rose:#a85548; --b-rose-soft:#f7e8e5;
+  --b-amber:#9a7328; --b-amber-soft:#f7efe0;
+  --b-plum:#755994; --b-plum-soft:#efeaf5;
+  --b-indigo:#4d6899; --b-indigo-soft:#e7ecf5;
+  --merge-border:#5b6d78; --merge-soft:#eaeff2;
   --font:Satoshi,"Noto Sans SC","PingFang SC","Microsoft YaHei",system-ui,sans-serif;
   --mono:"JetBrains Mono",ui-monospace,"SF Mono",Menlo,Consolas,monospace;
   --col:44rem; --r:12px; --r-sm:8px; --ease:cubic-bezier(.2,.7,.3,1);
@@ -16,12 +22,24 @@
   --ink:#f4f5f6; --ink-2:#c3c8cd; --ink-3:#8b9198;
   --line:rgba(244,245,246,.13); --line-2:rgba(244,245,246,.06);
   --accent:#9cc9da; --accent-soft:#1b2a31; --mark:#7a611a;
+  --b-sage:#7ec49e; --b-sage-soft:#162820;
+  --b-rose:#e09385; --b-rose-soft:#2c1b19;
+  --b-amber:#dfc07a; --b-amber-soft:#2a2315;
+  --b-plum:#b9a0d6; --b-plum-soft:#221c2b;
+  --b-indigo:#94b0e0; --b-indigo-soft:#192231;
+  --merge-border:#8aa8b8; --merge-soft:#182128;
 }}
 :root[data-theme=dark]{
   --paper:#0c0d10; --card:#14161a; --sunk:#101216;
   --ink:#f4f5f6; --ink-2:#c3c8cd; --ink-3:#8b9198;
   --line:rgba(244,245,246,.13); --line-2:rgba(244,245,246,.06);
   --accent:#9cc9da; --accent-soft:#1b2a31; --mark:#7a611a;
+  --b-sage:#7ec49e; --b-sage-soft:#162820;
+  --b-rose:#e09385; --b-rose-soft:#2c1b19;
+  --b-amber:#dfc07a; --b-amber-soft:#2a2315;
+  --b-plum:#b9a0d6; --b-plum-soft:#221c2b;
+  --b-indigo:#94b0e0; --b-indigo-soft:#192231;
+  --merge-border:#8aa8b8; --merge-soft:#182128;
 }
 
 *{box-sizing:border-box}
@@ -40,7 +58,7 @@ body{
 }
 
 .shell{
-  max-width:1320px;
+  max-width:1440px;
   margin-inline:auto;
   padding:0 1.5rem 2.5rem;
 }
@@ -127,7 +145,7 @@ body{
 .ref-tag{
   display:inline-flex;
   align-items:center;
-  gap:.35rem;
+  gap:.38rem;
   font:500 13px/1.4 var(--mono);
   color:var(--ink-2);
   background:var(--card);
@@ -145,6 +163,13 @@ body{
   color:var(--accent);
   border-color:color-mix(in srgb,var(--accent) 55%,transparent);
   background:var(--accent-soft);
+}
+.ref-dot{
+  display:inline-block;
+  width:8px;
+  height:8px;
+  border-radius:50%;
+  flex:none;
 }
 .ref-tag .ref-short{
   color:var(--ink-3);
@@ -188,7 +213,7 @@ body{
 /* Main two-column workbench grid */
 .workspace{
   display:grid;
-  grid-template-columns:minmax(380px,5fr) minmax(480px,7fr);
+  grid-template-columns:minmax(500px,6.3fr) minmax(440px,5.7fr);
   gap:1rem;
   align-items:start;
 }
@@ -250,7 +275,8 @@ body{
 }
 .dag-canvas{
   width:100%;
-  height:430px;
+  height:clamp(510px,56vh,620px);
+  min-height:510px;
   outline:none;
 }
 .graph-caption{
@@ -259,7 +285,7 @@ body{
   justify-content:space-between;
   flex-wrap:wrap;
   gap:.5rem 1rem;
-  padding:.65rem 1.1rem;
+  padding:.6rem 1.1rem;
   border-bottom:1px solid var(--line-2);
   font-size:13px;
   color:var(--ink-3);
@@ -287,6 +313,14 @@ body{
 .dot-acc{
   background:var(--accent-soft);
   border:1.5px solid var(--accent);
+}
+.dot-branch{
+  background:var(--b-sage-soft);
+  border:1.5px solid var(--b-sage);
+}
+.dot-merge{
+  background:var(--merge-soft);
+  border:1.5px dashed var(--merge-border);
 }
 .dot-node{
   background:var(--sunk);
@@ -316,7 +350,7 @@ body{
   display:flex;
   align-items:center;
   justify-content:space-between;
-  padding:.55rem 1.1rem;
+  padding:.48rem 1.1rem;
   border-bottom:1px solid var(--line-2);
   background:var(--sunk);
 }
@@ -331,7 +365,7 @@ body{
   color:var(--ink-3);
 }
 .commit-list{
-  max-height:220px;
+  max-height:172px;
   overflow-y:auto;
 }
 .commit-row{
@@ -341,7 +375,7 @@ body{
   gap:.75rem;
   width:100%;
   text-align:left;
-  padding:.55rem 1.1rem;
+  padding:.46rem 1.1rem;
   background:var(--card);
   border:0;
   border-bottom:1px solid var(--line-2);
@@ -737,7 +771,8 @@ body{
     grid-template-columns:1fr;
   }
   .dag-canvas{
-    height:340px;
+    height:480px;
+    min-height:440px;
   }
 }
 @media (max-width:680px){

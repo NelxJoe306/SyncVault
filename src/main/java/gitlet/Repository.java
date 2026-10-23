@@ -971,6 +971,20 @@ public class Repository {
         return serve(NettyServer.DEFAULT_PORT);
     }
 
+    /**
+     * Starts an HTTP server exposing the local read-only Web UI and JSON API.
+     *
+     * @param port HTTP port (0 for an ephemeral free port)
+     * @return running WebServer handle
+     */
+    public static WebServer web(int port) {
+        return new WebServer(Store.getDefault().getDbFile(), port).start();
+    }
+
+    public static WebServer web() {
+        return web(WebServer.DEFAULT_PORT);
+    }
+
     static boolean isNetworkRemote(String remotePath) {
         if (remotePath == null) {
             return false;

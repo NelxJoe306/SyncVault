@@ -30,6 +30,7 @@ SyncVault 是一个轻量级的类似 Git 的版本控制系统（VCS）。本�
   - `fetch`：从远程仓库拉取提交与分支历史。
   - `pull`：从远程拉取并合并至当前分支。
   - `serve [port]`：启动基于 Netty 的 TCP 同步服务端（默认端口 `9418`）。
+  - `web [port]`：启动本地只读 Web UI 与 JSON API 服务（默认端口 `8080`），提供基于 Vis.js (`vis-network`) 的交互式提交 DAG 图、提交详情检视及文件树 / Blob 原文预览。
 - **可插拔哈希架构**：
   - 定义了 `HashFunction` 抽象接口，提供可插拔的哈希算法支持（已包含 SHA-256 与 SHA-1 实现）。
 - **SQLite 存储引擎**：
@@ -50,6 +51,7 @@ SyncVault 是一个轻量级的类似 Git 的版本控制系统（VCS）。本�
 │   └── run-integration-tests.sh       # 集成测试运行脚本
 ├── src/
 │   ├── main/java/gitlet/              # SyncVault 核心源码
+│   ├── main/resources/web/            # 本地 Web UI 静态资源 (HTML/CSS/JS)
 │   └── test/java/gitlet/              # JUnit 5 单元测试
 └── tests/
     └── integration/                   # 集成测试套件与测试用例
@@ -91,6 +93,11 @@ java -jar target/syncvault-0.1.0-SNAPSHOT.jar add-remote origin localhost:9418
 java -jar target/syncvault-0.1.0-SNAPSHOT.jar push origin master
 ```
 
+启动本地只读 Web UI（默认监听 `8080` 端口）：
+```bash
+java -jar target/syncvault-0.1.0-SNAPSHOT.jar web 8080
+```
+
 ## 测试
 
 ### 单元测试
@@ -111,5 +118,5 @@ scripts/run-integration-tests.sh
 - [x] Netty push/pull 多设备同步
 - [ ] 三方合并改进
 - [ ] gc 垃圾回收
-- [ ] Web UI (Vis.js 提交图)
+- [x] Web UI (Vis.js 提交图)
 - [ ] 包名重命名 (gitlet -> io.github.nelxjoe306.syncvault)

@@ -308,4 +308,36 @@ public class StoreTest {
 
         store.close();
     }
+
+    @Test
+    public void testGraphMetadataQueries(@TempDir Path tempDir) {
+        Store.Session store = Store.open(tempDir.toFile());
+        store.createSchema();
+
+        Commit a = new Commit("root", new TreeMap<>(), null);
+        a.setSelfHash("a");
+        store.putCommit(a);
+
+        Commit b = new Commit("branch1", new TreeMap<>(), "a");
+        b.setSelfHash("b");
+        store.putCommit(b);
+
+        Commit m = new Commit("merge", new TreeMap<>(), "b", "a");
+        m.setSelfHash("m");
+        store.putCommit(m);
+
+        store.setRef("master", "m");
+        store.setRef("dev", "b");
+
+        List<Store.CommitMeta> metas = store.allCommitMetas();
+        assertEquals(3, metas.size());
+
+        List<Store.CommitParent> parents = store.allCommitParents();
+        assertEquals(3, parents.size());
+
+        Map<String, String> refs = store.allRefs();
+        assertEquals(Map.of("dev", "b", "master", "m"), refs);
+
+        store.close();
+    }
 }

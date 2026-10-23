@@ -29,6 +29,7 @@ public class Main {
      * push
      * fetch
      * pull
+     * serve
      */
     public static void main(String[] args) throws IOException {
         if (args.length == 0) {
@@ -181,6 +182,21 @@ public class Main {
                     System.exit(0);
                 }
                 Repository.pull(args[1], args[2]);
+                break;
+            case "serve":
+                if (args.length == 1) {
+                    Repository.serve(NettyServer.DEFAULT_PORT).await();
+                } else if (args.length == 2) {
+                    try {
+                        Repository.serve(Integer.parseInt(args[1])).await();
+                    } catch (NumberFormatException e) {
+                        System.out.println("Incorrect operands.");
+                        System.exit(0);
+                    }
+                } else {
+                    System.out.println("Incorrect operands.");
+                    System.exit(0);
+                }
                 break;
             default:
                 System.out.println("No command with that name exists.");

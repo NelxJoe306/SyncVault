@@ -200,6 +200,10 @@ public class Store {
             this.dbFile = dbFile;
         }
 
+        public File getDbFile() {
+            return dbFile;
+        }
+
         public synchronized Connection getConnection() {
             try {
                 if (conn == null || conn.isClosed()) {

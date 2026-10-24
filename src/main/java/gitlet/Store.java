@@ -21,6 +21,10 @@ public class Store {
         void run() throws Exception;
     }
 
+    public record CommitMeta(String hash, String message, long timestamp) {}
+
+    public record CommitParent(String child, String parent, int idx) {}
+
     public static synchronized Session getDefault() {
         if (defaultSession == null) {
             defaultSession = open(Repository.GITLET_DIR);
@@ -79,6 +83,14 @@ public class Store {
         return getDefault().allCommitIds();
     }
 
+    public static List<CommitMeta> allCommitMetas() {
+        return getDefault().allCommitMetas();
+    }
+
+    public static List<CommitParent> allCommitParents() {
+        return getDefault().allCommitParents();
+    }
+
     public static List<String> commitIdsWithMessage(String msg) {
         return getDefault().commitIdsWithMessage(msg);
     }
@@ -101,6 +113,10 @@ public class Store {
 
     public static List<String> allRefNames() {
         return getDefault().allRefNames();
+    }
+
+    public static Map<String, String> allRefs() {
+        return getDefault().allRefs();
     }
 
     public static String getHead() {
@@ -371,6 +387,34 @@ public class Store {
             }
         }
 
+        public List<CommitMeta> allCommitMetas() {
+            String sql = "SELECT hash, message, timestamp FROM commit_meta ORDER BY timestamp ASC, hash ASC";
+            List<CommitMeta> list = new ArrayList<>();
+            try (PreparedStatement pstmt = getConnection().prepareStatement(sql);
+                 ResultSet rs = pstmt.executeQuery()) {
+                while (rs.next()) {
+                    list.add(new CommitMeta(rs.getString(1), rs.getString(2), rs.getLong(3)));
+                }
+                return list;
+            } catch (SQLException e) {
+                throw new GitletException(e.getMessage());
+            }
+        }
+
+        public List<CommitParent> allCommitParents() {
+            String sql = "SELECT child, parent, idx FROM commit_parent ORDER BY child ASC, idx ASC";
+            List<CommitParent> list = new ArrayList<>();
+            try (PreparedStatement pstmt = getConnection().prepareStatement(sql);
+                 ResultSet rs = pstmt.executeQuery()) {
+                while (rs.next()) {
+                    list.add(new CommitParent(rs.getString(1), rs.getString(2), rs.getInt(3)));
+                }
+                return list;
+            } catch (SQLException e) {
+                throw new GitletException(e.getMessage());
+            }
+        }
+
         public List<String> commitIdsWithMessage(String msg) {
             String sql = "SELECT hash FROM commit_meta WHERE message = ? ORDER BY hash ASC";
             List<String> list = new ArrayList<>();
@@ -449,6 +493,20 @@ public class Store {
                     list.add(rs.getString(1));
                 }
                 return list;
+            } catch (SQLException e) {
+                throw new GitletException(e.getMessage());
+            }
+        }
+
+        public Map<String, String> allRefs() {
+            String sql = "SELECT name, hash FROM ref ORDER BY name ASC";
+            Map<String, String> map = new LinkedHashMap<>();
+            try (PreparedStatement pstmt = getConnection().prepareStatement(sql);
+                 ResultSet rs = pstmt.executeQuery()) {
+                while (rs.next()) {
+                    map.put(rs.getString(1), rs.getString(2));
+                }
+                return map;
             } catch (SQLException e) {
                 throw new GitletException(e.getMessage());
             }

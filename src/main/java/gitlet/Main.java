@@ -30,6 +30,7 @@ public class Main {
      * fetch
      * pull
      * serve
+     * web
      */
     public static void main(String[] args) throws IOException {
         if (args.length == 0) {
@@ -189,6 +190,26 @@ public class Main {
                 } else if (args.length == 2) {
                     try {
                         Repository.serve(Integer.parseInt(args[1])).await();
+                    } catch (NumberFormatException e) {
+                        System.out.println("Incorrect operands.");
+                        System.exit(0);
+                    }
+                } else {
+                    System.out.println("Incorrect operands.");
+                    System.exit(0);
+                }
+                break;
+            case "web":
+                if (args.length == 1) {
+                    Repository.web(WebServer.DEFAULT_PORT).await();
+                } else if (args.length == 2) {
+                    try {
+                        int port = Integer.parseInt(args[1]);
+                        if (port < 0 || port > 65535) {
+                            System.out.println("Incorrect operands.");
+                            System.exit(0);
+                        }
+                        Repository.web(port).await();
                     } catch (NumberFormatException e) {
                         System.out.println("Incorrect operands.");
                         System.exit(0);

@@ -8,6 +8,8 @@
     selectedCommitDetail: null,
     selectedFilePath: null,
     selectedBlob: null,
+    viewingWorktree: false,
+    worktreeStatus: null,
     blobViewMode: 'conflict',
     network: null,
     nodesDataSet: null,
@@ -1019,14 +1021,28 @@
     state.selectedCommitHash = hash;
     updateSelectedCommitHighlights(hash, Boolean(options.focusGraph));
 
-    return fetch('/api/commits/' + encodeURIComponent(hash))
+    var detailPromise = fetch('/api/commits/' + encodeURIComponent(hash))
       .then(function (res) {
         if (!res.ok) {
           throw new Error('Failed to load commit ' + hash);
         }
         return res.json();
+      });
+    var statusPromise = fetch('/api/status')
+      .then(function (res) {
+        if (!res.ok) {
+          return null;
+        }
+        return res.json();
       })
-      .then(function (detail) {
+      .catch(function () {
+        return null;
+      });
+
+    return Promise.all([detailPromise, statusPromise])
+      .then(function (results) {
+        var detail = results[0];
+        state.worktreeStatus = results[1];
         state.selectedCommitDetail = detail;
         renderCommitDetail(detail);
         renderFileExplorer(detail);
@@ -1158,6 +1174,7 @@
         shortBlobHash: fileObj.shortBlobHash,
         size: fileObj.size,
         conflict: Boolean(fileObj.conflict),
+        staged: Boolean(fileObj.staged),
         parentsDiffer: Boolean(fileObj.parentsDiffer),
         oursParent: fileObj.oursParent || null,
         theirsParent: fileObj.theirsParent || null
@@ -1198,7 +1215,7 @@
       var btn = document.createElement('button');
       btn.type = 'button';
       var classes = 'tree-file';
-      if (fileObj.path === state.selectedFilePath) {
+      if (!state.viewingWorktree && fileObj.path === state.selectedFilePath) {
         classes += ' active';
       }
       if (fileObj.conflict) {
@@ -1209,9 +1226,14 @@
       btn.setAttribute('data-file-path', fileObj.path);
       btn.setAttribute('data-conflict', fileObj.conflict ? 'true' : 'false');
 
-      var rightBadgeHtml = fileObj.conflict
-        ? '<span class="tree-file-right"><span class="conflict-badge">Conflict</span><span class="tree-file-hash">' + escapeHtml(fileObj.shortBlobHash || '') + '</span></span>'
-        : '<span class="tree-file-hash">' + escapeHtml(fileObj.shortBlobHash || '') + '</span>';
+      var rightBadgeHtml;
+      if (fileObj.conflict) {
+        rightBadgeHtml = '<span class="tree-file-right"><span class="conflict-badge">Conflict</span><span class="tree-file-hash">' + escapeHtml(fileObj.shortBlobHash || '') + '</span></span>';
+      } else if (fileObj.staged) {
+        rightBadgeHtml = '<span class="tree-file-right"><span class="staged-badge">Staged</span><span class="tree-file-hash">' + escapeHtml(fileObj.shortBlobHash || '') + '</span></span>';
+      } else {
+        rightBadgeHtml = '<span class="tree-file-hash">' + escapeHtml(fileObj.shortBlobHash || '') + '</span>';
+      }
 
       btn.innerHTML =
         '<span class="tree-file-name">' +
@@ -1226,14 +1248,103 @@
     });
   }
 
-  function renderFileExplorer(detail) {
+  function worktreeConflictPaths() {
+    var status = state.worktreeStatus;
+    if (!status || !Array.isArray(status.conflictedFiles)) {
+      return [];
+    }
+    return status.conflictedFiles.filter(function (p) { return !!p; });
+  }
+
+  function appendWorktreeRows(treeEl) {
+    var paths = worktreeConflictPaths();
+    if (!treeEl || paths.length === 0) {
+      return;
+    }
+    var label = document.createElement('div');
+    label.className = 'worktree-label';
+    label.textContent = 'Working tree';
+    treeEl.appendChild(label);
+    paths.forEach(function (filePath) {
+      var btn = document.createElement('button');
+      btn.type = 'button';
+      var classes = 'tree-file has-conflict';
+      if (state.viewingWorktree && filePath === state.selectedFilePath) {
+        classes += ' active';
+      }
+      btn.className = classes;
+      btn.setAttribute('data-worktree-path', filePath);
+      btn.innerHTML =
+        '<span class="tree-file-name">' +
+          '<span class="tree-file-icon">!</span>' +
+          '<span>' + escapeHtml(filePath) + '</span>' +
+        '</span>' +
+        '<span class="tree-file-right"><span class="conflict-badge">Worktree</span></span>';
+      btn.addEventListener('click', function () {
+        selectWorktreeFile(filePath);
+      });
+      treeEl.appendChild(btn);
+    });
+  }
+
+  var previewRequest = 0;
+
+  function selectWorktreeFile(filePath) {
+    var requestId = ++previewRequest;
+    state.viewingWorktree = true;
+    state.selectedFilePath = filePath;
+    document.querySelectorAll('.tree-file').forEach(function (btn) {
+      var wt = btn.getAttribute('data-worktree-path');
+      var commitPath = btn.getAttribute('data-file-path');
+      btn.classList.toggle('active', wt === filePath && !commitPath);
+    });
+
+    var pathEl = document.getElementById('blob-path');
+    if (pathEl) {
+      pathEl.textContent = 'worktree · ' + filePath;
+    }
+
+    return fetch('/api/worktree?path=' + encodeURIComponent(filePath))
+      .then(function (res) {
+        return res.json().catch(function () { return {}; }).then(function (data) {
+          if (!res.ok) {
+            throw new Error((data && data.error) || 'Failed to load working-tree file.');
+          }
+          data.worktree = true;
+          return data;
+        });
+      })
+      .then(function (blob) {
+        if (requestId !== previewRequest) {
+          return;
+        }
+        state.selectedBlob = blob;
+        renderBlobPreview(blob);
+      })
+      .catch(function (err) {
+        if (requestId !== previewRequest) {
+          return;
+        }
+        var viewerEl = document.getElementById('blob-viewer');
+        if (viewerEl) {
+          viewerEl.innerHTML = '<div class="empty-state">' + escapeHtml(err.message || 'Failed to load working-tree file.') + '</div>';
+        }
+      });
+  }
+
+  function renderFileExplorer(detail, opts) {
+    var options = opts || {};
     var files = detail.files || [];
     var conflictFiles = files.filter(function (f) { return Boolean(f.conflict); });
+    var wtPaths = worktreeConflictPaths();
     var summaryEl = document.getElementById('files-summary');
     if (summaryEl) {
       var summaryText = files.length + (files.length === 1 ? ' tracked file' : ' tracked files');
       if (conflictFiles.length > 0) {
         summaryText += ' · ' + conflictFiles.length + (conflictFiles.length === 1 ? ' conflict' : ' conflicts');
+      }
+      if (wtPaths.length > 0) {
+        summaryText += ' · ' + wtPaths.length + (wtPaths.length === 1 ? ' working-tree conflict' : ' working-tree conflicts');
       }
       summaryEl.textContent = summaryText;
     }
@@ -1244,57 +1355,81 @@
     }
     treeEl.innerHTML = '';
 
-    if (files.length === 0) {
-      state.selectedFilePath = null;
-      state.selectedBlob = null;
+    if (files.length === 0 && wtPaths.length === 0) {
+      if (!options.keepPreview) {
+        state.viewingWorktree = false;
+        state.selectedFilePath = null;
+        state.selectedBlob = null;
+      }
       treeEl.innerHTML = '<div class="empty-state">No tracked files in this commit.</div>';
-      var pathEl = document.getElementById('blob-path');
-      var chipEl = document.getElementById('blob-hash-chip');
-      var metaEl = document.getElementById('blob-header-meta');
-      var viewerEl = document.getElementById('blob-viewer');
-      var pillEl = document.getElementById('blob-conflict-pill');
-      var switchEl = document.getElementById('conflict-view-switch');
-      if (pathEl) {
-        pathEl.textContent = 'Empty tree';
-      }
-      if (chipEl) {
-        chipEl.textContent = '';
-      }
-      if (metaEl) {
-        metaEl.textContent = '';
-      }
-      if (pillEl) {
-        pillEl.hidden = true;
-      }
-      if (switchEl) {
-        switchEl.hidden = true;
-      }
-      if (viewerEl) {
-        viewerEl.innerHTML = '<div class="empty-state">This commit has an empty file snapshot (0 tracked files).</div>';
+      if (!options.keepPreview) {
+        var pathEl = document.getElementById('blob-path');
+        var chipEl = document.getElementById('blob-hash-chip');
+        var metaEl = document.getElementById('blob-header-meta');
+        var viewerEl = document.getElementById('blob-viewer');
+        var pillEl = document.getElementById('blob-conflict-pill');
+        var switchEl = document.getElementById('conflict-view-switch');
+        if (pathEl) {
+          pathEl.textContent = 'Empty tree';
+        }
+        if (chipEl) {
+          chipEl.textContent = '';
+        }
+        if (metaEl) {
+          metaEl.textContent = '';
+        }
+        if (pillEl) {
+          pillEl.hidden = true;
+        }
+        if (switchEl) {
+          switchEl.hidden = true;
+        }
+        if (viewerEl) {
+          viewerEl.innerHTML = '<div class="empty-state">This commit has an empty file snapshot (0 tracked files).</div>';
+        }
       }
       return;
     }
 
+    var openWorktree = !options.keepPreview && detail.isHead && wtPaths.length > 0;
     var targetPath = null;
-    if (state.selectedFilePath) {
-      var stillExists = files.some(function (f) {
-        return f.path === state.selectedFilePath;
-      });
-      if (stillExists) {
-        targetPath = state.selectedFilePath;
+    if (files.length > 0) {
+      if (!state.viewingWorktree && state.selectedFilePath) {
+        var stillExists = files.some(function (f) {
+          return f.path === state.selectedFilePath;
+        });
+        if (stillExists) {
+          targetPath = state.selectedFilePath;
+        }
       }
+      if (!targetPath) {
+        targetPath = conflictFiles.length > 0 ? conflictFiles[0].path : files[0].path;
+      }
+      if (!options.keepPreview && !openWorktree) {
+        state.selectedFilePath = targetPath;
+        state.viewingWorktree = false;
+      }
+      var hierarchy = buildHierarchyTree(files);
+      renderTreeNode(hierarchy, treeEl, detail.hash);
     }
-    if (!targetPath) {
-      targetPath = conflictFiles.length > 0 ? conflictFiles[0].path : files[0].path;
-    }
-    state.selectedFilePath = targetPath;
 
-    var hierarchy = buildHierarchyTree(files);
-    renderTreeNode(hierarchy, treeEl, detail.hash);
-    selectFile(detail.hash, targetPath);
+    appendWorktreeRows(treeEl);
+
+    if (options.keepPreview) {
+      return;
+    }
+    if (openWorktree) {
+      selectWorktreeFile(wtPaths[0]);
+      return;
+    }
+    if (targetPath) {
+      selectFile(detail.hash, targetPath);
+    }
   }
 
   function selectFile(commitHash, filePath) {
+    var requestId = ++previewRequest;
+    state.viewingWorktree = false;
     state.selectedFilePath = filePath;
     document.querySelectorAll('.tree-file').forEach(function (btn) {
       btn.classList.toggle('active', btn.getAttribute('data-file-path') === filePath);
@@ -1314,6 +1449,9 @@
         return res.json();
       })
       .then(function (blob) {
+        if (requestId !== previewRequest) {
+          return;
+        }
         state.selectedBlob = blob;
         if (state.selectedCommitDetail) {
           renderParentsRow(state.selectedCommitDetail, blob);
@@ -1321,6 +1459,9 @@
         renderBlobPreview(blob);
       })
       .catch(function (err) {
+        if (requestId !== previewRequest) {
+          return;
+        }
         var viewerEl = document.getElementById('blob-viewer');
         if (viewerEl) {
           viewerEl.innerHTML = '<div class="empty-state">' + escapeHtml(err.message || 'Failed to load blob.') + '</div>';
@@ -1416,7 +1557,7 @@
     var switchEl = document.getElementById('conflict-view-switch');
 
     if (pathEl) {
-      pathEl.textContent = blob.path || '';
+      pathEl.textContent = blob.worktree ? ('worktree · ' + (blob.path || '')) : (blob.path || '');
     }
     if (chipEl) {
       chipEl.textContent = 'blob ' + (blob.shortBlobHash || '');
@@ -1544,8 +1685,18 @@
             '<span class="side-pill side-ours">' + escapeHtml(oursTitle) + '</span>' +
             '<span class="side-vs">vs</span>' +
             '<span class="side-pill side-theirs">' + escapeHtml(theirsTitle) + '</span>' +
+            (blob.worktree === true
+              ? '<div class="conflict-actions">' +
+                  '<button class="pill-btn resolve-btn resolve-ours-btn" id="btn-resolve-ours" type="button" data-resolve-side="ours">Use Ours</button>' +
+                  '<button class="pill-btn resolve-btn resolve-theirs-btn" id="btn-resolve-theirs" type="button" data-resolve-side="theirs">Use Theirs</button>' +
+                '</div>'
+              : '') +
           '</div>' +
-        '</div>'
+        '</div>' +
+        (blob.worktree === true
+          ? ''
+          : '<div class="conflict-worktree-note">Stored in this commit. Resolve the working-tree file.</div>') +
+        '<div class="conflict-resolve-error" id="conflict-resolve-error" hidden></div>'
     );
 
     var hunkIndex = 0;
@@ -1606,6 +1757,89 @@
 
     parts.push('</div>');
     viewerEl.innerHTML = parts.join('');
+
+    var btnOurs = document.getElementById('btn-resolve-ours');
+    var btnTheirs = document.getElementById('btn-resolve-theirs');
+    if (btnOurs) {
+      btnOurs.addEventListener('click', function () {
+        resolveConflictFile(blob.path, 'ours');
+      });
+    }
+    if (btnTheirs) {
+      btnTheirs.addEventListener('click', function () {
+        resolveConflictFile(blob.path, 'theirs');
+      });
+    }
+  }
+
+  function resolveConflictFile(filePath, side) {
+    if (!filePath || !side) {
+      return Promise.resolve();
+    }
+    var btnOurs = document.getElementById('btn-resolve-ours');
+    var btnTheirs = document.getElementById('btn-resolve-theirs');
+    var errEl = document.getElementById('conflict-resolve-error');
+    if (btnOurs) {
+      btnOurs.disabled = true;
+    }
+    if (btnTheirs) {
+      btnTheirs.disabled = true;
+    }
+    if (errEl) {
+      errEl.hidden = true;
+      errEl.textContent = '';
+    }
+
+    return fetch('/api/resolve', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ path: filePath, side: side })
+    })
+      .then(function (res) {
+        return res.json().catch(function () { return {}; }).then(function (data) {
+          if (!res.ok || !data || !data.ok) {
+            throw new Error((data && data.error) || 'Failed to resolve conflict.');
+          }
+          return data;
+        });
+      })
+      .then(function (resolvedBlob) {
+        resolvedBlob.worktree = true;
+        state.viewingWorktree = true;
+        state.selectedFilePath = filePath;
+        state.selectedBlob = resolvedBlob;
+        renderBlobPreview(resolvedBlob);
+        return fetch('/api/status')
+          .then(function (res) {
+            if (!res.ok) {
+              return null;
+            }
+            return res.json();
+          })
+          .catch(function () {
+            return null;
+          })
+          .then(function (status) {
+            if (status) {
+              state.worktreeStatus = status;
+            }
+            if (state.selectedCommitDetail) {
+              renderFileExplorer(state.selectedCommitDetail, { keepPreview: true });
+            }
+          });
+      })
+      .catch(function (err) {
+        if (btnOurs) {
+          btnOurs.disabled = false;
+        }
+        if (btnTheirs) {
+          btnTheirs.disabled = false;
+        }
+        if (errEl) {
+          errEl.textContent = err.message || 'Failed to resolve conflict.';
+          errEl.hidden = false;
+        }
+      });
   }
 
   function escapeHtml(str) {

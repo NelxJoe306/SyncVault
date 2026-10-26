@@ -24,6 +24,7 @@ public class Main {
      * rm-branch
      * reset
      * merge
+     * resolve
      * add-remote
      * rm-remote
      * push
@@ -158,6 +159,24 @@ public class Main {
                     System.exit(0);
                 }
                 Repository.merge(args[1]);
+                break;
+            case "resolve":
+                if (args.length != 3 || (!args[2].equals("--ours")
+                        && !args[2].equals("--theirs")
+                        && !args[2].equals("--combined"))) {
+                    System.out.println("Incorrect operands.");
+                    System.exit(0);
+                }
+                try {
+                    if (args[1].equals("--all")) {
+                        Repository.resolveAll(args[2]);
+                    } else {
+                        Repository.resolve(args[1], args[2]);
+                    }
+                } catch (GitletException e) {
+                    System.out.println(e.getMessage());
+                    System.exit(0);
+                }
                 break;
             case "add-remote":
                 if (args.length != 3) {

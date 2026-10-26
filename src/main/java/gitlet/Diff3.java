@@ -622,4 +622,82 @@ public final class Diff3 {
         String trimmed = line.stripTrailing();
         return trimmed.equals(MARKER_END) || trimmed.startsWith(">>>>>>> ");
     }
+
+    /**
+     * Normalizes a conflict resolution side argument ("ours", "--ours", "theirs", "--theirs",
+     * "combined", "--combined") to its canonical lowercase name.
+     */
+    public static String normalizeSide(String side) {
+        if (side == null) {
+            throw new GitletException("Incorrect operands.");
+        }
+        String s = side.trim().toLowerCase();
+        if (s.startsWith("--")) {
+            s = s.substring(2);
+        }
+        return switch (s) {
+            case "ours", "theirs", "combined" -> s;
+            default -> throw new GitletException("Incorrect operands.");
+        };
+    }
+
+    /**
+     * Resolves all conflict marker blocks in a UTF-8 text string by choosing
+     * the specified side ("ours", "theirs", or "combined") for every conflict hunk
+     * while preserving context sections and trailing newline semantics.
+     */
+    public static String resolve(String text, String side) {
+        String normalizedSide = normalizeSide(side);
+        if (text == null || !hasConflictMarkers(text)) {
+            throw new GitletException("File has no conflict markers.");
+        }
+        List<Section> sections = parseSections(text);
+        List<String> outLines = new ArrayList<>();
+        boolean sawConflict = false;
+        for (Section section : sections) {
+            if (section.isConflict()) {
+                sawConflict = true;
+                switch (normalizedSide) {
+                    case "ours" -> {
+                        if (section.ours() != null) {
+                            outLines.addAll(section.ours());
+                        }
+                    }
+                    case "theirs" -> {
+                        if (section.theirs() != null) {
+                            outLines.addAll(section.theirs());
+                        }
+                    }
+                    case "combined" -> {
+                        if (section.ours() != null) {
+                            outLines.addAll(section.ours());
+                        }
+                        if (section.theirs() != null) {
+                            outLines.addAll(section.theirs());
+                        }
+                    }
+                    default -> throw new GitletException("Incorrect operands.");
+                }
+            } else if (section.lines() != null) {
+                outLines.addAll(section.lines());
+            }
+        }
+        if (!sawConflict) {
+            throw new GitletException("File has no conflict markers.");
+        }
+        return joinLines(outLines, endsWithNewline(text));
+    }
+
+    /**
+     * Resolves all conflict marker blocks in a raw byte array by choosing
+     * the specified side ("ours", "theirs", or "combined").
+     */
+    public static byte[] resolve(byte[] bytes, String side) {
+        String normalizedSide = normalizeSide(side);
+        String text = tryDecodeUtf8Text(bytes);
+        if (text == null || !hasConflictMarkers(text)) {
+            throw new GitletException("File has no conflict markers.");
+        }
+        return resolve(text, normalizedSide).getBytes(StandardCharsets.UTF_8);
+    }
 }

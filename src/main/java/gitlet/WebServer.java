@@ -11,6 +11,7 @@ import java.net.InetSocketAddress;
 import java.net.URI;
 import java.net.URLDecoder;
 import java.nio.charset.StandardCharsets;
+import java.nio.file.Path;
 import java.text.SimpleDateFormat;
 import java.util.*;
 import java.util.concurrent.CountDownLatch;
@@ -53,7 +54,7 @@ public class WebServer implements AutoCloseable {
 
     public WebServer start() {
         try {
-            httpServer = HttpServer.create(new InetSocketAddress(requestedPort), 0);
+            httpServer = HttpServer.create(new InetSocketAddress("127.0.0.1", requestedPort), 0);
             executor = Executors.newCachedThreadPool(r -> {
                 Thread t = new Thread(r, "syncvault-web");
                 t.setDaemon(true);
@@ -112,13 +113,27 @@ public class WebServer implements AutoCloseable {
     private void handleRequest(HttpExchange exchange) throws IOException {
         try {
             String method = exchange.getRequestMethod();
-            if (!"GET".equalsIgnoreCase(method) && !"HEAD".equalsIgnoreCase(method)) {
-                sendJson(exchange, 405, Map.of("error", "Method not allowed."));
+            URI uri = exchange.getRequestURI();
+            String path = uri.getPath();
+
+            if ("POST".equalsIgnoreCase(method)) {
+                if ("/api/resolve".equals(path)) {
+                    handleResolve(exchange, parseQuery(uri.getRawQuery()));
+                    return;
+                }
+                sendJson(exchange, 405, Map.of("ok", false, "error", "Method not allowed."));
                 return;
             }
 
-            URI uri = exchange.getRequestURI();
-            String path = uri.getPath();
+            if (!"GET".equalsIgnoreCase(method) && !"HEAD".equalsIgnoreCase(method)) {
+                sendJson(exchange, 405, Map.of("ok", false, "error", "Method not allowed."));
+                return;
+            }
+
+            if ("/api/resolve".equals(path)) {
+                sendJson(exchange, 405, Map.of("ok", false, "error", "Method not allowed."));
+                return;
+            }
             if (path == null || path.isEmpty() || "/".equals(path) || "/index.html".equals(path)) {
                 serveResource(exchange, "/web/index.html", "text/html; charset=utf-8");
                 return;
@@ -139,6 +154,16 @@ public class WebServer implements AutoCloseable {
 
             if ("/api/graph".equals(path)) {
                 handleGraph(exchange);
+                return;
+            }
+
+            if ("/api/status".equals(path)) {
+                handleStatus(exchange);
+                return;
+            }
+
+            if ("/api/worktree".equals(path)) {
+                handleWorktree(exchange, parseQuery(uri.getRawQuery()));
                 return;
             }
 
@@ -281,6 +306,7 @@ public class WebServer implements AutoCloseable {
             String headBranch = session.getHead();
             Map<String, String> refsMap = session.allRefs();
             String headCommit = (headBranch != null) ? refsMap.get(headBranch) : null;
+            boolean isHead = Objects.equals(fullHash, headCommit);
 
             List<String> commitRefs = new ArrayList<>();
             for (Map.Entry<String, String> entry : refsMap.entrySet()) {
@@ -348,7 +374,7 @@ public class WebServer implements AutoCloseable {
                 response.put("theirsParent", commit.getSecondParent());
             }
             response.put("refs", commitRefs);
-            response.put("isHead", Objects.equals(fullHash, headCommit));
+            response.put("isHead", isHead);
             response.put("hasConflicts", conflictFileCount > 0);
             response.put("conflictCount", conflictFileCount);
             response.put("files", files);
@@ -417,6 +443,217 @@ public class WebServer implements AutoCloseable {
             response = buildBlobPayload(filePath != null ? filePath : blobHash, null, blobHash.trim(), bytes);
         }
         sendJson(exchange, 200, response);
+    }
+
+    private void handleStatus(HttpExchange exchange) throws IOException {
+        Map<String, Object> response = new LinkedHashMap<>();
+        synchronized (session) {
+            String headBranch = session.getHead();
+            Map<String, String> refsMap = session.allRefs();
+            String headCommit = (headBranch != null) ? refsMap.get(headBranch) : null;
+            TreeMap<String, String> stagedAdd = session.stagedAdditions();
+            List<String> stagedRm = session.stagedRemovals();
+            File workDir = Repository.workDirForSession(session);
+            List<String> conflictedFiles = new ArrayList<>();
+            List<String> cwdFiles = Utils.plainFilenamesIn(workDir);
+            if (cwdFiles != null) {
+                for (String name : cwdFiles) {
+                    File f = new File(workDir, name);
+                    if (f.isFile() && Diff3.hasConflictMarkers(Utils.readContents(f))) {
+                        conflictedFiles.add(name);
+                    }
+                }
+            }
+            response.put("head", headBranch);
+            response.put("headCommit", headCommit);
+            response.put("stagedAdditions", new ArrayList<>(stagedAdd.keySet()));
+            response.put("stagedRemovals", stagedRm != null ? stagedRm : Collections.emptyList());
+            response.put("conflictedFiles", conflictedFiles);
+        }
+        sendJson(exchange, 200, response);
+    }
+
+    /**
+     * Returns the working-tree file at {@code path} (the same path {@code resolve} would edit).
+     * Commit snapshots are not consulted.
+     */
+    private void handleWorktree(HttpExchange exchange, Map<String, String> query) throws IOException {
+        String filePath = query.get("path");
+        if (filePath == null || filePath.isBlank()) {
+            sendJson(exchange, 400, Map.of("error", "File path is required."));
+            return;
+        }
+        try {
+            File workDir = Repository.workDirForSession(session);
+            Path rootPath = workDir.toPath().toAbsolutePath().normalize();
+            Path targetPath = Repository.resolveSafeRepoPath(rootPath, filePath);
+            File targetFile = targetPath.toFile();
+            if (!targetFile.exists() || !targetFile.isFile()) {
+                sendJson(exchange, 404, Map.of("error", "File does not exist."));
+                return;
+            }
+            byte[] bytes = Utils.readContents(targetFile);
+            String relPath = rootPath.relativize(targetPath).toString().replace(File.separatorChar, '/');
+            Map<String, Object> response;
+            synchronized (session) {
+                response = buildBlobPayload(relPath, null, Utils.hash(bytes), bytes);
+                response.put("worktree", true);
+                response.put("staged", session.stagedAdditions().containsKey(relPath));
+            }
+            sendJson(exchange, 200, response);
+        } catch (GitletException e) {
+            String msg = e.getMessage() != null ? e.getMessage() : "Invalid file path.";
+            int status = "File does not exist.".equals(msg) ? 404 : 400;
+            sendJson(exchange, status, Map.of("error", msg));
+        }
+    }
+
+    private void handleResolve(HttpExchange exchange, Map<String, String> query) throws IOException {
+        String body;
+        try (InputStream in = exchange.getRequestBody()) {
+            body = new String(in.readAllBytes(), StandardCharsets.UTF_8);
+        }
+        Map<String, String> payload;
+        try {
+            payload = (body != null && !body.isBlank()) ? parseJsonStringMap(body) : new LinkedHashMap<>();
+        } catch (IllegalArgumentException e) {
+            sendJson(exchange, 400, Map.of("ok", false, "error", "Invalid JSON request body."));
+            return;
+        }
+        String filePath = payload.getOrDefault("path", query.get("path"));
+        String side = payload.getOrDefault("side", query.get("side"));
+        if (filePath == null || filePath.isBlank() || side == null || side.isBlank()) {
+            sendJson(exchange, 400, Map.of("ok", false, "error", "Both path and side are required."));
+            return;
+        }
+
+        try {
+            String normalizedSide = Diff3.normalizeSide(side);
+            File workDir = Repository.workDirForSession(session);
+            byte[] resolvedBytes;
+            String resolvedHash;
+            Map<String, Object> response;
+            synchronized (session) {
+                resolvedBytes = Repository.resolve(session, workDir, filePath, normalizedSide);
+                resolvedHash = Utils.hash(resolvedBytes);
+                String headBranch = session.getHead();
+                Map<String, String> refsMap = session.allRefs();
+                String headCommit = (headBranch != null) ? refsMap.get(headBranch) : null;
+                response = buildBlobPayload(filePath, headCommit, resolvedHash, resolvedBytes);
+                response.put("ok", true);
+                response.put("side", normalizedSide);
+                response.put("staged", true);
+                response.put("worktree", true);
+            }
+            sendJson(exchange, 200, response);
+        } catch (GitletException e) {
+            String msg = e.getMessage() != null ? e.getMessage() : "Resolve failed.";
+            int status = "File does not exist.".equals(msg) ? 404 : 400;
+            sendJson(exchange, status, Map.of("ok", false, "error", msg));
+        }
+    }
+
+    static Map<String, String> parseJsonStringMap(String json) {
+        String s = json.trim();
+        if (!s.startsWith("{") || !s.endsWith("}")) {
+            throw new IllegalArgumentException("Expected JSON object.");
+        }
+        Map<String, String> map = new LinkedHashMap<>();
+        int i = 1;
+        int n = s.length() - 1;
+        while (i < n) {
+            while (i < n && Character.isWhitespace(s.charAt(i))) {
+                i++;
+            }
+            if (i >= n) {
+                break;
+            }
+            if (s.charAt(i) == ',') {
+                i++;
+                continue;
+            }
+            if (s.charAt(i) != '"') {
+                throw new IllegalArgumentException("Expected JSON string key.");
+            }
+            int[] next = new int[]{i};
+            String key = readJsonString(s, next);
+            i = next[0];
+            while (i < n && Character.isWhitespace(s.charAt(i))) {
+                i++;
+            }
+            if (i >= n || s.charAt(i) != ':') {
+                throw new IllegalArgumentException("Expected ':' after JSON key.");
+            }
+            i++;
+            while (i < n && Character.isWhitespace(s.charAt(i))) {
+                i++;
+            }
+            if (i >= n) {
+                throw new IllegalArgumentException("Missing JSON value.");
+            }
+            String val;
+            if (s.charAt(i) == '"') {
+                next[0] = i;
+                val = readJsonString(s, next);
+                i = next[0];
+            } else {
+                int start = i;
+                while (i < n && s.charAt(i) != ',' && !Character.isWhitespace(s.charAt(i))) {
+                    i++;
+                }
+                String token = s.substring(start, i);
+                val = "null".equals(token) ? null : token;
+            }
+            if (val != null) {
+                map.put(key, val);
+            }
+        }
+        return map;
+    }
+
+    private static String readJsonString(String s, int[] idxRef) {
+        int i = idxRef[0];
+        int len = s.length();
+        if (i >= len || s.charAt(i) != '"') {
+            throw new IllegalArgumentException("Expected '\"'.");
+        }
+        i++;
+        StringBuilder sb = new StringBuilder();
+        while (i < len) {
+            char c = s.charAt(i++);
+            if (c == '"') {
+                idxRef[0] = i;
+                return sb.toString();
+            }
+            if (c == '\\') {
+                if (i >= len) {
+                    throw new IllegalArgumentException("Unterminated escape in JSON string.");
+                }
+                char esc = s.charAt(i++);
+                switch (esc) {
+                    case '"' -> sb.append('"');
+                    case '\\' -> sb.append('\\');
+                    case '/' -> sb.append('/');
+                    case 'b' -> sb.append('\b');
+                    case 'f' -> sb.append('\f');
+                    case 'n' -> sb.append('\n');
+                    case 'r' -> sb.append('\r');
+                    case 't' -> sb.append('\t');
+                    case 'u' -> {
+                        if (i + 4 > len) {
+                            throw new IllegalArgumentException("Invalid unicode escape in JSON string.");
+                        }
+                        String hex = s.substring(i, i + 4);
+                        sb.append((char) Integer.parseInt(hex, 16));
+                        i += 4;
+                    }
+                    default -> throw new IllegalArgumentException("Invalid escape sequence in JSON string.");
+                }
+            } else {
+                sb.append(c);
+            }
+        }
+        throw new IllegalArgumentException("Unterminated JSON string.");
     }
 
     private String resolveCommitId(String id) {

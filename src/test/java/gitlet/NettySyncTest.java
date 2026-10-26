@@ -6,6 +6,10 @@ import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
+import io.netty.buffer.UnpooledByteBufAllocator;
+import io.netty.handler.ssl.SslContext;
+
+import javax.net.ssl.SSLEngine;
 import java.io.File;
 import java.io.FileInputStream;
 import java.nio.charset.StandardCharsets;
@@ -50,6 +54,10 @@ public class NettySyncTest {
     private record CertKeyPair(File certFile, File keyFile) {}
 
     private static CertKeyPair generateSelfSignedPem(Path dir, String prefix, String dname) throws Exception {
+        return generateSelfSignedPem(dir, prefix, dname, "dns:localhost,ip:127.0.0.1");
+    }
+
+    private static CertKeyPair generateSelfSignedPem(Path dir, String prefix, String dname, String san) throws Exception {
         File p12File = dir.resolve(prefix + ".p12").toFile();
         String keytoolBin = Path.of(System.getProperty("java.home"), "bin", "keytool").toString();
         ProcessBuilder pb = new ProcessBuilder(
@@ -60,7 +68,7 @@ public class NettySyncTest {
                 "-keysize", "2048",
                 "-sigalg", "SHA256withRSA",
                 "-dname", dname,
-                "-ext", "SAN=dns:localhost,ip:127.0.0.1",
+                "-ext", "SAN=" + san,
                 "-validity", "365",
                 "-keystore", p12File.getAbsolutePath(),
                 "-storetype", "PKCS12",
@@ -438,5 +446,38 @@ public class NettySyncTest {
                 () -> NettyClient.buildClientSslContext(true, missingFile, false)
         );
         assertTrue(missingCaEx.getMessage().startsWith("TLS CA certificate file not found:"));
+    }
+
+    @Test
+    public void testTlsVerifiesHostnameUnlessInsecure(@TempDir Path tempDir) throws Exception {
+        SslContext trusted = NettyClient.buildClientSslContext(true, serverCertFile, false);
+        SSLEngine trustedEngine = trusted.newEngine(UnpooledByteBufAllocator.DEFAULT, "localhost", 9418);
+        assertEquals("HTTPS", trustedEngine.getSSLParameters().getEndpointIdentificationAlgorithm());
+
+        SslContext insecure = NettyClient.buildClientSslContext(true, null, true);
+        SSLEngine insecureEngine = insecure.newEngine(UnpooledByteBufAllocator.DEFAULT, "localhost", 9418);
+        assertNull(insecureEngine.getSSLParameters().getEndpointIdentificationAlgorithm());
+
+        CertKeyPair evil = generateSelfSignedPem(
+                tempDir, "evil", "CN=evil.example", "dns:evil.example");
+
+        File serverDir = tempDir.resolve("server/.gitlet").toFile();
+        File clientDir = tempDir.resolve("client/.gitlet").toFile();
+        String serverInitId = initRepo(serverDir);
+        server = Repository.serve(0, null, evil.certFile(), evil.keyFile());
+        int port = server.getPort();
+
+        initRepo(clientDir);
+        Repository.add_remote("origin", "nettys://localhost:" + port);
+
+        GitletException mismatch = assertThrows(
+                GitletException.class,
+                () -> Repository.fetch("origin", "master", null, evil.certFile(), false)
+        );
+        assertTrue(mismatch.getMessage().startsWith("TLS handshake failed:"),
+                "Expected hostname mismatch to fail the handshake but got: " + mismatch.getMessage());
+
+        Repository.fetch("origin", "master", null, null, true);
+        assertEquals(serverInitId, Store.getRef("origin/master"));
     }
 }

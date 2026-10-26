@@ -324,27 +324,23 @@ public class NettyClient {
         if (!useTls) {
             return null;
         }
-        if (caFile != null) {
-            if (!caFile.exists() || !caFile.isFile()) {
-                throw new GitletException("TLS CA certificate file not found: " + caFile.getPath());
-            }
-            try {
-                return SslContextBuilder.forClient().trustManager(caFile).build();
-            } catch (Exception e) {
-                throw new GitletException("Failed to initialize client TLS context: " + e.getMessage());
-            }
-        }
-        if (insecure) {
-            try {
-                return SslContextBuilder.forClient()
-                        .trustManager(InsecureTrustManagerFactory.INSTANCE)
-                        .build();
-            } catch (Exception e) {
-                throw new GitletException("Failed to initialize client TLS context: " + e.getMessage());
-            }
+        if (caFile != null && (!caFile.exists() || !caFile.isFile())) {
+            throw new GitletException("TLS CA certificate file not found: " + caFile.getPath());
         }
         try {
-            return SslContextBuilder.forClient().build();
+            SslContextBuilder builder = SslContextBuilder.forClient();
+            if (caFile != null) {
+                builder.trustManager(caFile);
+            } else if (insecure) {
+                builder.trustManager(InsecureTrustManagerFactory.INSTANCE);
+            }
+            // Netty leaves this null, which disables hostname checks, so any
+            // certificate the trust store accepts would authenticate every host.
+            // Skip identification only when the insecure trust manager is used.
+            if (caFile != null || !insecure) {
+                builder.endpointIdentificationAlgorithm("HTTPS");
+            }
+            return builder.build();
         } catch (Exception e) {
             throw new GitletException("Failed to initialize client TLS context: " + e.getMessage());
         }

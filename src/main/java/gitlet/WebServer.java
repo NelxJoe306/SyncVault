@@ -10,11 +10,6 @@ import java.io.OutputStream;
 import java.net.InetSocketAddress;
 import java.net.URI;
 import java.net.URLDecoder;
-import java.nio.ByteBuffer;
-import java.nio.CharBuffer;
-import java.nio.charset.CharacterCodingException;
-import java.nio.charset.CharsetDecoder;
-import java.nio.charset.CodingErrorAction;
 import java.nio.charset.StandardCharsets;
 import java.text.SimpleDateFormat;
 import java.util.*;
@@ -473,20 +468,7 @@ public class WebServer implements AutoCloseable {
     }
 
     private static String tryDecodeUtf8Text(byte[] bytes) {
-        for (byte b : bytes) {
-            if (b == 0) {
-                return null;
-            }
-        }
-        CharsetDecoder decoder = StandardCharsets.UTF_8.newDecoder()
-                .onMalformedInput(CodingErrorAction.REPORT)
-                .onUnmappableCharacter(CodingErrorAction.REPORT);
-        try {
-            CharBuffer chars = decoder.decode(ByteBuffer.wrap(bytes));
-            return chars.toString();
-        } catch (CharacterCodingException e) {
-            return null;
-        }
+        return Diff3.tryDecodeUtf8Text(bytes);
     }
 
     private static String formatHexPreview(byte[] bytes, int maxBytes) {

@@ -53,16 +53,34 @@ public final class Diff3 {
     }
 
     /**
+     * Type of a parsed or merged blob section.
+     */
+    public enum SectionType {
+        CONTEXT("context"),
+        CONFLICT("conflict");
+
+        private final String jsonValue;
+
+        SectionType(String jsonValue) {
+            this.jsonValue = jsonValue;
+        }
+
+        public String jsonValue() {
+            return jsonValue;
+        }
+    }
+
+    /**
      * Represents a parsed section of a text blob (either normal context lines or a conflict block).
      */
-    public record Section(String type, int startLine, List<String> lines, List<String> ours, List<String> theirs) {
+    public record Section(SectionType type, int startLine, List<String> lines, List<String> ours, List<String> theirs) {
         public boolean isConflict() {
-            return "conflict".equals(type);
+            return type == SectionType.CONFLICT;
         }
 
         public Map<String, Object> toMap() {
             Map<String, Object> map = new LinkedHashMap<>();
-            map.put("type", type);
+            map.put("type", type.jsonValue());
             map.put("startLine", startLine);
             if (isConflict()) {
                 map.put("ours", ours != null ? ours : Collections.emptyList());
@@ -144,22 +162,23 @@ public final class Diff3 {
         List<String> theirsLines = splitLines(theirsText);
 
         if (oursLines.equals(theirsLines)) {
-            String joined = joinLines(oursLines);
+            boolean trailingNewline = endsWithNewline(oursText) || endsWithNewline(theirsText);
+            String joined = joinLines(oursLines, trailingNewline);
             return new Result(joined.getBytes(StandardCharsets.UTF_8), false);
         }
         if (baseLines.equals(oursLines)) {
-            String joined = joinLines(theirsLines);
+            String joined = joinLines(theirsLines, endsWithNewline(theirsText));
             return new Result(joined.getBytes(StandardCharsets.UTF_8), false);
         }
         if (baseLines.equals(theirsLines)) {
-            String joined = joinLines(oursLines);
+            String joined = joinLines(oursLines, endsWithNewline(oursText));
             return new Result(joined.getBytes(StandardCharsets.UTF_8), false);
         }
 
         List<Hunk> hunksO = computeHunks(baseLines, oursLines);
         List<Hunk> hunksT = computeHunks(baseLines, theirsLines);
 
-        // Represent output as a sequence of clean lines and conflict blocks so adjacent conflicts coalesce
+        // Represent output as a sequence of clean context sections and individual conflict blocks
         List<Section> rawSections = new ArrayList<>();
         boolean hasConflict = false;
 
@@ -283,7 +302,9 @@ public final class Diff3 {
             }
         }
 
-        String merged = joinLines(outLines);
+        boolean trailingNewline =
+                endsWithNewline(baseText) || endsWithNewline(oursText) || endsWithNewline(theirsText);
+        String merged = joinLines(outLines, trailingNewline);
         return new Result(merged.getBytes(StandardCharsets.UTF_8), hasConflict);
     }
 
@@ -293,7 +314,7 @@ public final class Diff3 {
         } else {
             List<String> list = new ArrayList<>();
             list.add(line);
-            sections.add(new Section("context", 1, list, null, null));
+            sections.add(new Section(SectionType.CONTEXT, 1, list, null, null));
         }
     }
 
@@ -304,13 +325,7 @@ public final class Diff3 {
     }
 
     private static void addConflictBlock(List<Section> sections, List<String> ours, List<String> theirs) {
-        if (!sections.isEmpty() && sections.get(sections.size() - 1).isConflict()) {
-            Section prev = sections.get(sections.size() - 1);
-            prev.ours().addAll(ours);
-            prev.theirs().addAll(theirs);
-        } else {
-            sections.add(new Section("conflict", 1, null, new ArrayList<>(ours), new ArrayList<>(theirs)));
-        }
+        sections.add(new Section(SectionType.CONFLICT, 1, null, new ArrayList<>(ours), new ArrayList<>(theirs)));
     }
 
     /**
@@ -404,13 +419,23 @@ public final class Diff3 {
         return lines;
     }
 
-    private static String joinLines(List<String> lines) {
+    private static boolean endsWithNewline(String text) {
+        return text != null && !text.isEmpty() && text.charAt(text.length() - 1) == '\n';
+    }
+
+    private static String joinLines(List<String> lines, boolean trailingNewline) {
         if (lines.isEmpty()) {
             return "";
         }
         StringBuilder sb = new StringBuilder();
-        for (String line : lines) {
-            sb.append(line).append('\n');
+        for (int i = 0; i < lines.size(); i++) {
+            if (i > 0) {
+                sb.append('\n');
+            }
+            sb.append(lines.get(i));
+        }
+        if (trailingNewline) {
+            sb.append('\n');
         }
         return sb.toString();
     }
@@ -524,12 +549,12 @@ public final class Diff3 {
 
                 if (sepIdx > i && endIdx > sepIdx) {
                     if (!contextBuf.isEmpty()) {
-                        sections.add(new Section("context", contextStartLine, new ArrayList<>(contextBuf), null, null));
+                        sections.add(new Section(SectionType.CONTEXT, contextStartLine, new ArrayList<>(contextBuf), null, null));
                         contextBuf.clear();
                     }
                     List<String> ours = new ArrayList<>(lines.subList(i + 1, sepIdx));
                     List<String> theirs = new ArrayList<>(lines.subList(sepIdx + 1, endIdx));
-                    sections.add(new Section("conflict", i + 1, null, ours, theirs));
+                    sections.add(new Section(SectionType.CONFLICT, i + 1, null, ours, theirs));
                     i = endIdx + 1;
                     contextStartLine = i + 1;
                     continue;
@@ -544,7 +569,7 @@ public final class Diff3 {
         }
 
         if (!contextBuf.isEmpty()) {
-            sections.add(new Section("context", contextStartLine, new ArrayList<>(contextBuf), null, null));
+            sections.add(new Section(SectionType.CONTEXT, contextStartLine, new ArrayList<>(contextBuf), null, null));
         }
 
         return sections;

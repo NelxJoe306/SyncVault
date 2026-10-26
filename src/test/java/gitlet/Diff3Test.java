@@ -165,12 +165,73 @@ public class Diff3Test {
 
         List<Diff3.Section> sections = Diff3.parseSections(content);
         assertEquals(3, sections.size());
+        assertEquals(Diff3.SectionType.CONTEXT, sections.get(0).type());
         assertFalse(sections.get(0).isConflict());
         assertEquals(List.of("clean top"), sections.get(0).lines());
+        assertEquals(Diff3.SectionType.CONFLICT, sections.get(1).type());
         assertTrue(sections.get(1).isConflict());
         assertEquals(List.of("ours 1", "ours 2"), sections.get(1).ours());
         assertEquals(List.of("theirs 1"), sections.get(1).theirs());
+        assertEquals(Diff3.SectionType.CONTEXT, sections.get(2).type());
         assertFalse(sections.get(2).isConflict());
         assertEquals(List.of("clean bottom"), sections.get(2).lines());
+    }
+
+    @Test
+    public void testNoTrailingNewlinePreserved() {
+        String base = "line 1\nline 2\nline 3";
+        String ours = "line 1 ours\nline 2\nline 3";
+        String theirs = "line 1\nline 2\nline 3 theirs";
+
+        Diff3.Result cleanRes = Diff3.merge(base, ours, theirs);
+        assertFalse(cleanRes.hasConflict());
+        assertEquals("line 1 ours\nline 2\nline 3 theirs", cleanRes.text());
+        assertFalse(cleanRes.text().endsWith("\n"));
+
+        String conflictOurs = "line 1\nline 2 ours\nline 3";
+        String conflictTheirs = "line 1\nline 2 theirs\nline 3";
+        Diff3.Result conflictRes = Diff3.merge(base, conflictOurs, conflictTheirs);
+        assertTrue(conflictRes.hasConflict());
+        String expectedConflict =
+                "line 1\n"
+                + "<<<<<<< HEAD\n"
+                + "line 2 ours\n"
+                + "=======\n"
+                + "line 2 theirs\n"
+                + ">>>>>>>\n"
+                + "line 3";
+        assertEquals(expectedConflict, conflictRes.text());
+        assertFalse(conflictRes.text().endsWith("\n"));
+    }
+
+    @Test
+    public void testAdjacentConflictingHunksEmitSeparateMarkerRegions() {
+        String base = "line 1\nline 2\n";
+        String ours = "line 1 ours\nline 2 ours\n";
+        String theirs = "line 1 theirs\nline 2 theirs\n";
+
+        Diff3.Result res = Diff3.merge(base, ours, theirs);
+        assertTrue(res.hasConflict());
+        String expected =
+                "<<<<<<< HEAD\n"
+                + "line 1 ours\n"
+                + "=======\n"
+                + "line 1 theirs\n"
+                + ">>>>>>>\n"
+                + "<<<<<<< HEAD\n"
+                + "line 2 ours\n"
+                + "=======\n"
+                + "line 2 theirs\n"
+                + ">>>>>>>\n";
+        assertEquals(expected, res.text());
+
+        List<Diff3.Section> parsed = Diff3.parseSections(res.text());
+        assertEquals(2, parsed.size());
+        assertTrue(parsed.get(0).isConflict());
+        assertEquals(List.of("line 1 ours"), parsed.get(0).ours());
+        assertEquals(List.of("line 1 theirs"), parsed.get(0).theirs());
+        assertTrue(parsed.get(1).isConflict());
+        assertEquals(List.of("line 2 ours"), parsed.get(1).ours());
+        assertEquals(List.of("line 2 theirs"), parsed.get(1).theirs());
     }
 }

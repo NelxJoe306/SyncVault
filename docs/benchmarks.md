@@ -28,9 +28,11 @@ For each scale $N \in \{1000, 5000, 10000\}$, `gitlet.Benchmark` spawns a fresh 
 
 | Scale ($N$ commits) | $N$ Sequential Commits (ms) | Avg per Commit (ms) | `log` (ms) | `checkout` early -> tip (ms) |
 |---:|---:|---:|---:|---:|
-| **1,000** | 1,980 | 1.98 | 72 | 5 |
-| **5,000** | 8,540 | 1.71 | 160 | 5 |
-| **10,000** | 16,463 | 1.65 | 268 | 2 |
+| **1,000** | 2,308 | 2.31 | 78 | 5 |
+| **5,000** | 9,534 | 1.91 | 176 | 5 |
+| **10,000** | 17,480 | 1.75 | 298 | 3 |
+
+> Note: `checkout` cost depends on the number of tracked working-tree files (5 files here) rather than commit history depth $N$; the slight drop at $N = 10,000$ (5 ms to 3 ms) reflects millisecond-level timer granularity, JIT warm-up, and a warm OS filesystem cache.
 
 > Optional Netty TCP sync measurement (`java -jar target/syncvault-0.1.0-SNAPSHOT.jar bench --with-netty 1000`):
 > - **1,000 commits** local `serve` + `push`: **251 ms** (with sequential commits: `2,202 ms`, `log`: `69 ms`, `checkout`: `2 ms`).

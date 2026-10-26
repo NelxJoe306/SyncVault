@@ -703,12 +703,12 @@ public class Repository {
                         if (mergeResult.hasConflict()) {
                             hasConflict = true;
                         }
-                        byte[] conflictContent = mergeResult.content();
-                        writeContents(join(CWD, file), conflictContent);
+                        byte[] mergedContent = mergeResult.content();
+                        writeContents(join(CWD, file), mergedContent);
                         Blob.saveToStage(file);
-                        String conflictBlobHash = Utils.hash(conflictContent);
-                        Store.putBlob(conflictBlobHash, conflictContent);
-                        newCommitMap.put(file, conflictBlobHash);
+                        String mergedBlobHash = Utils.hash(mergedContent);
+                        Store.putBlob(mergedBlobHash, mergedContent);
+                        newCommitMap.put(file, mergedBlobHash);
                     }
                 }
             } else {
@@ -732,12 +732,12 @@ public class Repository {
                         if (mergeResult.hasConflict()) {
                             hasConflict = true;
                         }
-                        byte[] conflictContent = mergeResult.content();
-                        writeContents(join(CWD, file), conflictContent);
+                        byte[] mergedContent = mergeResult.content();
+                        writeContents(join(CWD, file), mergedContent);
                         Blob.saveToStage(file);
-                        String conflictBlobHash = Utils.hash(conflictContent);
-                        Store.putBlob(conflictBlobHash, conflictContent);
-                        newCommitMap.put(file, conflictBlobHash);
+                        String mergedBlobHash = Utils.hash(mergedContent);
+                        Store.putBlob(mergedBlobHash, mergedContent);
+                        newCommitMap.put(file, mergedBlobHash);
                     }
                 }
             }
@@ -1034,16 +1034,6 @@ public class Repository {
     /** Branch names, including remote-tracking names stored in ref table. */
     private static List<String> allBranchNames() {
         return Store.allRefNames();
-    }
-
-    /** Spec conflict text using line-level 3-way merge (diff3). */
-    static byte[] buildConflict(byte[] base, byte[] current, byte[] given) {
-        return Diff3.mergeBytes(base, current, given);
-    }
-
-    /** Spec conflict text with empty base. */
-    private static byte[] buildConflict(byte[] current, byte[] given) {
-        return Diff3.mergeBytes(new byte[0], current, given);
     }
 }
 

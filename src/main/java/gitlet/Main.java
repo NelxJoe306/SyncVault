@@ -47,6 +47,15 @@ public class Main {
             Repository.init();
             return;
         }
+        if (firstArg.equals("bench")) {
+            String[] benchArgs = java.util.Arrays.copyOfRange(args, 1, args.length);
+            try {
+                Benchmark.main(benchArgs);
+            } catch (Exception e) {
+                throw new GitletException(e.getMessage());
+            }
+            return;
+        }
 
         if (!Repository.GITLET_DIR.exists()) {
             System.out.println("Not in an initialized Gitlet directory.");

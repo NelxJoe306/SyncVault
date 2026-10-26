@@ -112,11 +112,19 @@ mvn test
 scripts/run-integration-tests.sh
 ```
 
+### 基准测试 (Benchmarks)
+在 `/tmp` 临时仓库中复现微基准测试（测量连续提交、`log`、`checkout` 以及本地 Netty `serve + push` 耗时，详细结果见 [docs/benchmarks.md](docs/benchmarks.md)）：
+```bash
+scripts/bench.sh
+# 或指定提交规模运行：
+java -jar target/syncvault-0.1.0-SNAPSHOT.jar bench 1000 5000 10000
+```
+
 ## 路线图
 
 - [x] SQLite 存储
 - [x] Netty push/pull 多设备同步
-- [ ] 三方合并改进
+- [x] 三方合并改进 (Diff3 行级三方合并 + Web UI 冲突可视化)
 - [ ] gc 垃圾回收
 - [x] Web UI (Vis.js 提交图)
 - [ ] 包名重命名 (gitlet -> io.github.nelxjoe306.syncvault)

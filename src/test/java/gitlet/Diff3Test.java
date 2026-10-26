@@ -205,6 +205,23 @@ public class Diff3Test {
     }
 
     @Test
+    public void testTrailingNewlineUsesOnlyContributingInputs() {
+        Diff3.Result clean = Diff3.merge("a\nb\n", "A\nb", "a\nB");
+        assertFalse(clean.hasConflict());
+        assertEquals("A\nB", clean.text());
+
+        Diff3.Result conflict = Diff3.merge("base\n", "ours", "theirs");
+        assertTrue(conflict.hasConflict());
+        assertEquals(
+                "<<<<<<< HEAD\n"
+                + "ours\n"
+                + "=======\n"
+                + "theirs\n"
+                + ">>>>>>>",
+                conflict.text());
+    }
+
+    @Test
     public void testAdjacentConflictingHunksEmitSeparateMarkerRegions() {
         String base = "line 1\nline 2\n";
         String ours = "line 1 ours\nline 2 ours\n";

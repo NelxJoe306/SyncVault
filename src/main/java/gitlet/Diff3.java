@@ -181,6 +181,9 @@ public final class Diff3 {
         // Represent output as a sequence of clean context sections and individual conflict blocks
         List<Section> rawSections = new ArrayList<>();
         boolean hasConflict = false;
+        boolean contributedBase = false;
+        boolean contributedOurs = false;
+        boolean contributedTheirs = false;
 
         int nB = baseLines.size();
         int b = 0;
@@ -201,18 +204,27 @@ public final class Diff3 {
             }
 
             // Copy unchanged base lines before the next hunk
-            while (b < nextB) {
-                addContextLine(rawSections, baseLines.get(b));
-                b++;
+            if (b < nextB) {
+                contributedBase = true;
+                while (b < nextB) {
+                    addContextLine(rawSections, baseLines.get(b));
+                    b++;
+                }
             }
 
             if (hT == null) {
+                if (hO.tEnd() > hO.tStart()) {
+                    contributedOurs = true;
+                }
                 addContextSlice(rawSections, oursLines, hO.tStart(), hO.tEnd());
                 b = hO.bEnd();
                 iO++;
                 continue;
             }
             if (hO == null) {
+                if (hT.tEnd() > hT.tStart()) {
+                    contributedTheirs = true;
+                }
                 addContextSlice(rawSections, theirsLines, hT.tStart(), hT.tEnd());
                 b = hT.bEnd();
                 iT++;
@@ -224,12 +236,18 @@ public final class Diff3 {
                     hO.isPureInsertion() && hT.isPureInsertion() && hO.bStart() == hT.bStart();
 
             if (!bothPureInsertionsAtSamePoint && hO.bEnd() <= hT.bStart()) {
+                if (hO.tEnd() > hO.tStart()) {
+                    contributedOurs = true;
+                }
                 addContextSlice(rawSections, oursLines, hO.tStart(), hO.tEnd());
                 b = hO.bEnd();
                 iO++;
                 continue;
             }
             if (!bothPureInsertionsAtSamePoint && hT.bEnd() <= hO.bStart()) {
+                if (hT.tEnd() > hT.tStart()) {
+                    contributedTheirs = true;
+                }
                 addContextSlice(rawSections, theirsLines, hT.tStart(), hT.tEnd());
                 b = hT.bEnd();
                 iT++;
@@ -272,11 +290,21 @@ public final class Diff3 {
             List<String> theirsSlice = theirsLines.subList(tClusterStart, tClusterEnd);
 
             if (oursSlice.equals(theirsSlice)) {
+                if (!oursSlice.isEmpty()) {
+                    contributedOurs = true;
+                    contributedTheirs = true;
+                }
                 for (String line : oursSlice) {
                     addContextLine(rawSections, line);
                 }
             } else {
                 hasConflict = true;
+                if (!oursSlice.isEmpty()) {
+                    contributedOurs = true;
+                }
+                if (!theirsSlice.isEmpty()) {
+                    contributedTheirs = true;
+                }
                 addConflictBlock(rawSections, oursSlice, theirsSlice);
             }
 
@@ -284,9 +312,12 @@ public final class Diff3 {
         }
 
         // Copy any remaining unchanged base lines after the last hunk
-        while (b < nB) {
-            addContextLine(rawSections, baseLines.get(b));
-            b++;
+        if (b < nB) {
+            contributedBase = true;
+            while (b < nB) {
+                addContextLine(rawSections, baseLines.get(b));
+                b++;
+            }
         }
 
         List<String> outLines = new ArrayList<>();
@@ -302,8 +333,11 @@ public final class Diff3 {
             }
         }
 
-        boolean trailingNewline =
-                endsWithNewline(baseText) || endsWithNewline(oursText) || endsWithNewline(theirsText);
+        // Trailing LF only when an input that actually supplied output text ended with LF.
+        // An ancestor newline must not leak into a merge built only from no-LF sides.
+        boolean trailingNewline = (contributedBase && endsWithNewline(baseText))
+                || (contributedOurs && endsWithNewline(oursText))
+                || (contributedTheirs && endsWithNewline(theirsText));
         String merged = joinLines(outLines, trailingNewline);
         return new Result(merged.getBytes(StandardCharsets.UTF_8), hasConflict);
     }

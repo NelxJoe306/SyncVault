@@ -1158,6 +1158,7 @@
         shortBlobHash: fileObj.shortBlobHash,
         size: fileObj.size,
         conflict: Boolean(fileObj.conflict),
+        staged: Boolean(fileObj.staged),
         parentsDiffer: Boolean(fileObj.parentsDiffer),
         oursParent: fileObj.oursParent || null,
         theirsParent: fileObj.theirsParent || null
@@ -1209,9 +1210,14 @@
       btn.setAttribute('data-file-path', fileObj.path);
       btn.setAttribute('data-conflict', fileObj.conflict ? 'true' : 'false');
 
-      var rightBadgeHtml = fileObj.conflict
-        ? '<span class="tree-file-right"><span class="conflict-badge">Conflict</span><span class="tree-file-hash">' + escapeHtml(fileObj.shortBlobHash || '') + '</span></span>'
-        : '<span class="tree-file-hash">' + escapeHtml(fileObj.shortBlobHash || '') + '</span>';
+      var rightBadgeHtml;
+      if (fileObj.conflict) {
+        rightBadgeHtml = '<span class="tree-file-right"><span class="conflict-badge">Conflict</span><span class="tree-file-hash">' + escapeHtml(fileObj.shortBlobHash || '') + '</span></span>';
+      } else if (fileObj.staged) {
+        rightBadgeHtml = '<span class="tree-file-right"><span class="staged-badge">Staged</span><span class="tree-file-hash">' + escapeHtml(fileObj.shortBlobHash || '') + '</span></span>';
+      } else {
+        rightBadgeHtml = '<span class="tree-file-hash">' + escapeHtml(fileObj.shortBlobHash || '') + '</span>';
+      }
 
       btn.innerHTML =
         '<span class="tree-file-name">' +
@@ -1544,8 +1550,13 @@
             '<span class="side-pill side-ours">' + escapeHtml(oursTitle) + '</span>' +
             '<span class="side-vs">vs</span>' +
             '<span class="side-pill side-theirs">' + escapeHtml(theirsTitle) + '</span>' +
+            '<div class="conflict-actions">' +
+              '<button class="pill-btn resolve-btn resolve-ours-btn" id="btn-resolve-ours" type="button" data-resolve-side="ours">Use Ours</button>' +
+              '<button class="pill-btn resolve-btn resolve-theirs-btn" id="btn-resolve-theirs" type="button" data-resolve-side="theirs">Use Theirs</button>' +
+            '</div>' +
           '</div>' +
-        '</div>'
+        '</div>' +
+        '<div class="conflict-resolve-error" id="conflict-resolve-error" hidden></div>'
     );
 
     var hunkIndex = 0;
@@ -1606,6 +1617,73 @@
 
     parts.push('</div>');
     viewerEl.innerHTML = parts.join('');
+
+    var btnOurs = document.getElementById('btn-resolve-ours');
+    var btnTheirs = document.getElementById('btn-resolve-theirs');
+    if (btnOurs) {
+      btnOurs.addEventListener('click', function () {
+        resolveConflictFile(blob.path, 'ours');
+      });
+    }
+    if (btnTheirs) {
+      btnTheirs.addEventListener('click', function () {
+        resolveConflictFile(blob.path, 'theirs');
+      });
+    }
+  }
+
+  function resolveConflictFile(filePath, side) {
+    if (!filePath || !side) {
+      return Promise.resolve();
+    }
+    var btnOurs = document.getElementById('btn-resolve-ours');
+    var btnTheirs = document.getElementById('btn-resolve-theirs');
+    var errEl = document.getElementById('conflict-resolve-error');
+    if (btnOurs) {
+      btnOurs.disabled = true;
+    }
+    if (btnTheirs) {
+      btnTheirs.disabled = true;
+    }
+    if (errEl) {
+      errEl.hidden = true;
+      errEl.textContent = '';
+    }
+
+    return fetch('/api/resolve', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ path: filePath, side: side })
+    })
+      .then(function (res) {
+        return res.json().catch(function () { return {}; }).then(function (data) {
+          if (!res.ok || !data || !data.ok) {
+            throw new Error((data && data.error) || 'Failed to resolve conflict.');
+          }
+          return data;
+        });
+      })
+      .then(function (resolvedBlob) {
+        state.selectedFilePath = filePath;
+        state.selectedBlob = resolvedBlob;
+        renderBlobPreview(resolvedBlob);
+        fetch('/api/status').catch(function () {});
+        if (state.selectedCommitHash) {
+          return selectCommit(state.selectedCommitHash, { focusGraph: false });
+        }
+      })
+      .catch(function (err) {
+        if (btnOurs) {
+          btnOurs.disabled = false;
+        }
+        if (btnTheirs) {
+          btnTheirs.disabled = false;
+        }
+        if (errEl) {
+          errEl.textContent = err.message || 'Failed to resolve conflict.';
+          errEl.hidden = false;
+        }
+      });
   }
 
   function escapeHtml(str) {

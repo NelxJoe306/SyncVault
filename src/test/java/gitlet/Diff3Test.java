@@ -1,13 +1,23 @@
 package gitlet;
 
+import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.io.TempDir;
 
+import java.io.File;
 import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
+import java.nio.file.Path;
 import java.util.List;
 
 import static org.junit.jupiter.api.Assertions.*;
 
 public class Diff3Test {
+
+    @AfterEach
+    public void tearDown() {
+        Store.closeDefault();
+    }
 
     @Test
     public void testAutoMergeDisjointEdits() {
@@ -250,5 +260,137 @@ public class Diff3Test {
         assertTrue(parsed.get(1).isConflict());
         assertEquals(List.of("line 2 ours"), parsed.get(1).ours());
         assertEquals(List.of("line 2 theirs"), parsed.get(1).theirs());
+    }
+
+    @Test
+    public void testResolveOursAndTheirsMultiHunkAndTrailingNewline() {
+        String multiHunk =
+                "<<<<<<< HEAD\n"
+                + "a_ours\n"
+                + "=======\n"
+                + "a_theirs\n"
+                + ">>>>>>>\n"
+                + "b\n"
+                + "c\n"
+                + "<<<<<<< HEAD\n"
+                + "d_ours_1\n"
+                + "d_ours_2\n"
+                + "=======\n"
+                + "d_theirs_1\n"
+                + ">>>>>>>\n"
+                + "e\n";
+
+        assertEquals("a_ours\nb\nc\nd_ours_1\nd_ours_2\ne\n", Diff3.resolve(multiHunk, "--ours"));
+        assertEquals("a_theirs\nb\nc\nd_theirs_1\ne\n", Diff3.resolve(multiHunk, "theirs"));
+        assertEquals("a_ours\na_theirs\nb\nc\nd_ours_1\nd_ours_2\nd_theirs_1\ne\n", Diff3.resolve(multiHunk, "--combined"));
+
+        // Preserve absence of trailing newline
+        String noTrailingLf =
+                "line 1\n"
+                + "<<<<<<< HEAD\n"
+                + "line 2 ours\n"
+                + "=======\n"
+                + "line 2 theirs\n"
+                + ">>>>>>>\n"
+                + "line 3";
+        String resolvedNoLf = Diff3.resolve(noTrailingLf, "ours");
+        assertEquals("line 1\nline 2 ours\nline 3", resolvedNoLf);
+        assertFalse(resolvedNoLf.endsWith("\n"));
+    }
+
+    @Test
+    public void testResolveThrowsWhenNoConflictMarkersOrInvalidSide() {
+        GitletException noMarkerEx = assertThrows(
+                GitletException.class,
+                () -> Diff3.resolve("clean line 1\nclean line 2\n", "--ours")
+        );
+        assertEquals("File has no conflict markers.", noMarkerEx.getMessage());
+
+        GitletException badSideEx = assertThrows(
+                GitletException.class,
+                () -> Diff3.resolve("<<<<<<< HEAD\na\n=======\nb\n>>>>>>>\n", "--invalid")
+        );
+        assertEquals("Incorrect operands.", badSideEx.getMessage());
+    }
+
+    @Test
+    public void testRepositoryResolveWritesAndStagesWorkingTreeFile(@TempDir Path tempDir) throws Exception {
+        File gitletDir = tempDir.resolve(".gitlet").toFile();
+        Store.useDir(gitletDir);
+
+        // 1. Not initialized repo error
+        Path notesPath = tempDir.resolve("notes.txt");
+        Files.writeString(notesPath, "<<<<<<< HEAD\nours\n=======\ntheirs\n>>>>>>>\n", StandardCharsets.UTF_8);
+        GitletException notInitEx = assertThrows(
+                GitletException.class,
+                () -> Repository.resolve("notes.txt", "--ours")
+        );
+        assertEquals("Not in an initialized Gitlet directory.", notInitEx.getMessage());
+
+        // Initialize repo in tempDir
+        gitletDir.mkdirs();
+        Store.createSchema();
+        String c0 = Commit.first_commit();
+        Store.setHead("master");
+        Repository.currHead = c0;
+
+        // 2. Missing file error
+        GitletException missingEx = assertThrows(
+                GitletException.class,
+                () -> Repository.resolve("missing.txt", "--ours")
+        );
+        assertEquals("File does not exist.", missingEx.getMessage());
+
+        // 3. Path traversal error
+        GitletException escapeEx = assertThrows(
+                GitletException.class,
+                () -> Repository.resolve("../outside.txt", "--ours")
+        );
+        assertEquals("Invalid file path.", escapeEx.getMessage());
+
+        // 4. Multi-hunk resolve (--ours) writes file and stages it
+        String conflicted =
+                "intro\n"
+                + "<<<<<<< HEAD\n"
+                + "ours-1\n"
+                + "=======\n"
+                + "theirs-1\n"
+                + ">>>>>>>\n"
+                + "middle\n"
+                + "<<<<<<< HEAD\n"
+                + "ours-2\n"
+                + "=======\n"
+                + "theirs-2\n"
+                + ">>>>>>>\n"
+                + "outro\n";
+        Files.writeString(notesPath, conflicted, StandardCharsets.UTF_8);
+
+        Repository.resolve("notes.txt", "--ours");
+        String expectedOurs = "intro\nours-1\nmiddle\nours-2\noutro\n";
+        assertEquals(expectedOurs, Files.readString(notesPath, StandardCharsets.UTF_8));
+        assertFalse(Diff3.hasConflictMarkers(Files.readAllBytes(notesPath)));
+
+        String expectedOursHash = Utils.hash(expectedOurs.getBytes(StandardCharsets.UTF_8));
+        assertEquals(expectedOursHash, Store.stagedAdditions().get("notes.txt"));
+        assertArrayEquals(expectedOurs.getBytes(StandardCharsets.UTF_8), Store.getBlob(expectedOursHash));
+
+        // 5. Resolving an already-resolved (no-marker) file throws GitletException
+        GitletException alreadyCleanEx = assertThrows(
+                GitletException.class,
+                () -> Repository.resolve("notes.txt", "--theirs")
+        );
+        assertEquals("File has no conflict markers.", alreadyCleanEx.getMessage());
+
+        // 6. Multi-hunk resolve (--theirs) and resolveAll (--all)
+        Files.writeString(notesPath, conflicted, StandardCharsets.UTF_8);
+        Path secondPath = tempDir.resolve("second.txt");
+        Files.writeString(secondPath, "<<<<<<< HEAD\nleft\n=======\nright\n>>>>>>>\n", StandardCharsets.UTF_8);
+
+        List<String> resolvedAll = Repository.resolveAll("--theirs");
+        assertEquals(List.of("notes.txt", "second.txt"), resolvedAll);
+        assertEquals("intro\ntheirs-1\nmiddle\ntheirs-2\noutro\n", Files.readString(notesPath, StandardCharsets.UTF_8));
+        assertEquals("right\n", Files.readString(secondPath, StandardCharsets.UTF_8));
+        assertTrue(Store.stagedAdditions().containsKey("notes.txt"));
+        assertTrue(Store.stagedAdditions().containsKey("second.txt"));
     }
 }

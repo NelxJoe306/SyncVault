@@ -11,6 +11,7 @@ import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
 import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.TreeMap;
 
@@ -268,5 +269,153 @@ public class WebServerTest {
         assertTrue(blobJson.contains("\"oursParent\":\"" + cOurs + "\""));
         assertTrue(blobJson.contains("\"theirsParent\":\"" + cTheirs + "\""));
         assertTrue(blobJson.contains("\"parentsDiffer\":true"));
+    }
+
+    @Test
+    public void testPostResolveHappyPathAndBadPaths(@TempDir Path tempDir) throws Exception {
+        File gitletDir = tempDir.resolve(".gitlet").toFile();
+        gitletDir.mkdirs();
+        Store.useDir(gitletDir);
+        Store.createSchema();
+
+        String c0 = Commit.first_commit();
+        Store.setHead("master");
+        Repository.currHead = c0;
+
+        byte[] baseBytes = "header\nshared\nfooter\n".getBytes(StandardCharsets.UTF_8);
+        String baseHash = Utils.hash(baseBytes);
+        Store.putBlob(baseHash, baseBytes);
+        Store.stageAdd("app.txt", baseHash);
+        String cBase = Commit.commitInCurrBran("base app.txt");
+
+        Commit.branch("other");
+        Store.setHead("other");
+        Repository.currHead = cBase;
+
+        byte[] theirsBytes = "header\ntheirs-change\nfooter\n".getBytes(StandardCharsets.UTF_8);
+        String theirsHash = Utils.hash(theirsBytes);
+        Store.putBlob(theirsHash, theirsBytes);
+        Store.stageAdd("app.txt", theirsHash);
+        String cTheirs = Commit.commitInCurrBran("other modifies app.txt");
+
+        Store.setHead("master");
+        Repository.currHead = cBase;
+
+        byte[] oursBytes = "header-ours\nours-change\nfooter\n".getBytes(StandardCharsets.UTF_8);
+        String oursHash = Utils.hash(oursBytes);
+        Store.putBlob(oursHash, oursBytes);
+        Store.stageAdd("app.txt", oursHash);
+        String cOurs = Commit.commitInCurrBran("master modifies app.txt");
+
+        Diff3.Result diffRes = Diff3.merge(baseBytes, oursBytes, theirsBytes);
+        assertTrue(diffRes.hasConflict());
+        byte[] mergedBytes = diffRes.content();
+        String mergedHash = Utils.hash(mergedBytes);
+        Store.putBlob(mergedHash, mergedBytes);
+
+        // Write conflicted file into working directory (as merge does)
+        Path workingApp = tempDir.resolve("app.txt");
+        Files.write(workingApp, mergedBytes);
+
+        TreeMap<String, String> mergedFiles = new TreeMap<>();
+        mergedFiles.put("app.txt", mergedHash);
+        Commit mergeCommit = new Commit("Merged other into master.", mergedFiles, cOurs, cTheirs);
+        mergeCommit.setSelfHash(Utils.hash(Utils.serialize(mergeCommit)));
+        Store.putCommit(mergeCommit);
+        String cMerge = mergeCommit.getSelfHash();
+        Store.setRef("master", cMerge);
+        Repository.currHead = cMerge;
+
+        server = Repository.web(0);
+        int port = server.getPort();
+        HttpClient client = HttpClient.newHttpClient();
+        String baseUrl = "http://127.0.0.1:" + port;
+
+        // 1. Happy path: POST /api/resolve choosing "theirs"
+        HttpResponse<String> resolveRes = client.send(
+                HttpRequest.newBuilder(URI.create(baseUrl + "/api/resolve"))
+                        .header("Content-Type", "application/json")
+                        .POST(HttpRequest.BodyPublishers.ofString("{\"path\":\"app.txt\",\"side\":\"theirs\"}", StandardCharsets.UTF_8))
+                        .build(),
+                HttpResponse.BodyHandlers.ofString(StandardCharsets.UTF_8)
+        );
+        assertEquals(200, resolveRes.statusCode());
+        String resolveJson = resolveRes.body();
+        assertTrue(resolveJson.contains("\"ok\":true"));
+        assertTrue(resolveJson.contains("\"staged\":true"));
+        assertTrue(resolveJson.contains("\"conflict\":false"));
+        assertTrue(resolveJson.contains("\"conflictCount\":0"));
+        assertTrue(resolveJson.contains("header-ours\\ntheirs-change\\nfooter\\n"));
+
+        // Working tree file should have markers removed and be staged
+        String expectedResolved = "header-ours\ntheirs-change\nfooter\n";
+        assertEquals(expectedResolved, Files.readString(workingApp, StandardCharsets.UTF_8));
+        String expectedHash = Utils.hash(expectedResolved.getBytes(StandardCharsets.UTF_8));
+        assertEquals(expectedHash, Store.stagedAdditions().get("app.txt"));
+
+        // Subsequent commit detail and blob queries on HEAD should show conflict cleared
+        HttpResponse<String> detailAfterRes = client.send(
+                HttpRequest.newBuilder(URI.create(baseUrl + "/api/commits/" + cMerge)).GET().build(),
+                HttpResponse.BodyHandlers.ofString(StandardCharsets.UTF_8)
+        );
+        assertEquals(200, detailAfterRes.statusCode());
+        assertTrue(detailAfterRes.body().contains("\"hasConflicts\":false"));
+        assertTrue(detailAfterRes.body().contains("\"conflictCount\":0"));
+        assertTrue(detailAfterRes.body().contains("\"staged\":true"));
+
+        HttpResponse<String> blobAfterRes = client.send(
+                HttpRequest.newBuilder(URI.create(baseUrl + "/api/commits/" + cMerge + "/blob?path=app.txt")).GET().build(),
+                HttpResponse.BodyHandlers.ofString(StandardCharsets.UTF_8)
+        );
+        assertEquals(200, blobAfterRes.statusCode());
+        assertTrue(blobAfterRes.body().contains("\"conflict\":false"));
+        assertTrue(blobAfterRes.body().contains("\"staged\":true"));
+
+        // 2. Bad path: resolving an already-clean file (no conflict markers) -> 400
+        HttpResponse<String> noMarkerRes = client.send(
+                HttpRequest.newBuilder(URI.create(baseUrl + "/api/resolve"))
+                        .header("Content-Type", "application/json")
+                        .POST(HttpRequest.BodyPublishers.ofString("{\"path\":\"app.txt\",\"side\":\"ours\"}", StandardCharsets.UTF_8))
+                        .build(),
+                HttpResponse.BodyHandlers.ofString(StandardCharsets.UTF_8)
+        );
+        assertEquals(400, noMarkerRes.statusCode());
+        assertTrue(noMarkerRes.body().contains("\"ok\":false"));
+        assertTrue(noMarkerRes.body().contains("File has no conflict markers."));
+
+        // 3. Bad path: missing file -> 404
+        HttpResponse<String> missingRes = client.send(
+                HttpRequest.newBuilder(URI.create(baseUrl + "/api/resolve"))
+                        .header("Content-Type", "application/json")
+                        .POST(HttpRequest.BodyPublishers.ofString("{\"path\":\"nonexistent.txt\",\"side\":\"ours\"}", StandardCharsets.UTF_8))
+                        .build(),
+                HttpResponse.BodyHandlers.ofString(StandardCharsets.UTF_8)
+        );
+        assertEquals(404, missingRes.statusCode());
+        assertTrue(missingRes.body().contains("\"ok\":false"));
+        assertTrue(missingRes.body().contains("File does not exist."));
+
+        // 4. Bad path: path traversal (..) -> 400
+        HttpResponse<String> traversalRes = client.send(
+                HttpRequest.newBuilder(URI.create(baseUrl + "/api/resolve"))
+                        .header("Content-Type", "application/json")
+                        .POST(HttpRequest.BodyPublishers.ofString("{\"path\":\"../outside.txt\",\"side\":\"ours\"}", StandardCharsets.UTF_8))
+                        .build(),
+                HttpResponse.BodyHandlers.ofString(StandardCharsets.UTF_8)
+        );
+        assertEquals(400, traversalRes.statusCode());
+        assertTrue(traversalRes.body().contains("\"ok\":false"));
+        assertTrue(traversalRes.body().contains("Invalid file path."));
+
+        // 5. Bad path: invalid side -> 400
+        HttpResponse<String> badSideRes = client.send(
+                HttpRequest.newBuilder(URI.create(baseUrl + "/api/resolve"))
+                        .header("Content-Type", "application/json")
+                        .POST(HttpRequest.BodyPublishers.ofString("{\"path\":\"app.txt\",\"side\":\"wrong\"}", StandardCharsets.UTF_8))
+                        .build(),
+                HttpResponse.BodyHandlers.ofString(StandardCharsets.UTF_8)
+        );
+        assertEquals(400, badSideRes.statusCode());
+        assertTrue(badSideRes.body().contains("\"ok\":false"));
     }
 }

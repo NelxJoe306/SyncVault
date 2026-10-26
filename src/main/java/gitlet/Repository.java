@@ -2,6 +2,8 @@ package gitlet;
 
 import java.io.File;
 import java.io.IOException;
+import java.nio.file.InvalidPathException;
+import java.nio.file.Path;
 import java.util.*;
 
 import static gitlet.Blob.resetRemoval;
@@ -990,6 +992,150 @@ public class Repository {
 
     public static WebServer web() {
         return web(WebServer.DEFAULT_PORT);
+    }
+
+    /**
+     * Resolves conflict markers in the given working-tree file using the chosen side
+     * ("ours", "theirs", or "combined"), writes the resolved content back to disk,
+     * and stages the file for commit.
+     */
+    public static byte[] resolve(String fileName, String side) throws IOException {
+        Store.Session session = Store.getDefault();
+        return resolve(session, workDirForSession(session), fileName, side);
+    }
+
+    /**
+     * Resolves conflict markers in the given working-tree file relative to workDir
+     * and stages the resolved blob in the provided Store session.
+     */
+    public static byte[] resolve(Store.Session session, File workDir, String fileName, String side) throws IOException {
+        ensureRepoInitialized(session);
+        String normalizedSide = Diff3.normalizeSide(side);
+        if (fileName == null || fileName.isEmpty()) {
+            throw new GitletException("File does not exist.");
+        }
+        Path rootPath = workDir.toPath().toAbsolutePath().normalize();
+        Path targetPath = resolveSafeRepoPath(rootPath, fileName);
+        File targetFile = targetPath.toFile();
+        if (!targetFile.exists() || !targetFile.isFile()) {
+            throw new GitletException("File does not exist.");
+        }
+        byte[] rawBytes = readContents(targetFile);
+        byte[] resolvedBytes = Diff3.resolve(rawBytes, normalizedSide);
+        writeContents(targetFile, resolvedBytes);
+
+        String relPath = rootPath.relativize(targetPath).toString().replace(File.separatorChar, '/');
+        String resolvedHash = Utils.hash(resolvedBytes);
+        synchronized (session) {
+            session.unstageRemove(relPath);
+            session.stageAdd(relPath, resolvedHash);
+            session.putBlob(resolvedHash, resolvedBytes);
+        }
+        return resolvedBytes;
+    }
+
+    /**
+     * Resolves all conflicted working-tree files using the chosen side ("ours", "theirs", or "combined")
+     * and stages each resolved file.
+     */
+    public static List<String> resolveAll(String side) throws IOException {
+        Store.Session session = Store.getDefault();
+        return resolveAll(session, workDirForSession(session), side);
+    }
+
+    /**
+     * Resolves all conflicted working-tree files in workDir using the chosen side
+     * and stages each resolved file in the provided Store session.
+     */
+    public static List<String> resolveAll(Store.Session session, File workDir, String side) throws IOException {
+        ensureRepoInitialized(session);
+        String normalizedSide = Diff3.normalizeSide(side);
+        Set<String> candidatePaths = new TreeSet<>();
+        List<String> topFiles = plainFilenamesIn(workDir);
+        if (topFiles != null) {
+            candidatePaths.addAll(topFiles);
+        }
+        synchronized (session) {
+            String headBranch = session.getHead();
+            Map<String, String> refs = session.allRefs();
+            String headCommitId = (headBranch != null && refs.get(headBranch) != null)
+                    ? refs.get(headBranch) : currHead;
+            if (headCommitId != null) {
+                Commit headCommit = session.getCommit(headCommitId);
+                if (headCommit != null && headCommit.getNameToHash() != null) {
+                    candidatePaths.addAll(headCommit.getNameToHash().keySet());
+                }
+            }
+        }
+        Path rootPath = workDir.toPath().toAbsolutePath().normalize();
+        List<String> resolvedFiles = new ArrayList<>();
+        for (String rel : candidatePaths) {
+            Path p;
+            try {
+                p = resolveSafeRepoPath(rootPath, rel);
+            } catch (GitletException ignored) {
+                continue;
+            }
+            File f = p.toFile();
+            if (f.exists() && f.isFile() && Diff3.hasConflictMarkers(readContents(f))) {
+                resolve(session, workDir, rel, normalizedSide);
+                resolvedFiles.add(rel);
+            }
+        }
+        if (resolvedFiles.isEmpty()) {
+            throw new GitletException("File has no conflict markers.");
+        }
+        return resolvedFiles;
+    }
+
+    static void ensureRepoInitialized(Store.Session session) {
+        File gitletDir = gitletDirForSession(session);
+        if (gitletDir == null || !gitletDir.exists() || !gitletDir.isDirectory()
+                || session == null || session.getDbFile() == null || !session.getDbFile().exists()) {
+            throw new GitletException("Not in an initialized Gitlet directory.");
+        }
+    }
+
+    static File gitletDirForSession(Store.Session session) {
+        if (session == null || session.getDbFile() == null) {
+            return GITLET_DIR;
+        }
+        File parent = session.getDbFile().getParentFile();
+        return (parent != null) ? parent : GITLET_DIR;
+    }
+
+    static File workDirForSession(Store.Session session) {
+        File gitletDir = gitletDirForSession(session);
+        if (".gitlet".equals(gitletDir.getName()) && gitletDir.getParentFile() != null) {
+            return gitletDir.getParentFile();
+        }
+        return gitletDir;
+    }
+
+    static Path resolveSafeRepoPath(Path rootPath, String rawPath) {
+        if (rawPath == null || rawPath.isBlank() || rawPath.indexOf('\0') >= 0) {
+            throw new GitletException("Invalid file path.");
+        }
+        String normalizedInput = rawPath.replace('\\', '/');
+        for (String seg : normalizedInput.split("/")) {
+            if ("..".equals(seg) || ".gitlet".equals(seg)) {
+                throw new GitletException("Invalid file path.");
+            }
+        }
+        try {
+            Path rel = Path.of(normalizedInput);
+            if (rel.isAbsolute()) {
+                throw new GitletException("Invalid file path.");
+            }
+            Path resolved = rootPath.resolve(rel).normalize();
+            if (!resolved.startsWith(rootPath) || resolved.equals(rootPath)
+                    || resolved.startsWith(rootPath.resolve(".gitlet"))) {
+                throw new GitletException("Invalid file path.");
+            }
+            return resolved;
+        } catch (InvalidPathException e) {
+            throw new GitletException("Invalid file path.");
+        }
     }
 
     /**

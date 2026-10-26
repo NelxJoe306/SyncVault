@@ -23,6 +23,7 @@ SyncVault 是一个轻量级的类似 Git 的版本控制系统（VCS）。本�
   - `rm-branch`：删除指定分支指针。
   - `reset`：将当前分支 HEAD 回滚至指定提交并恢复工作区。
   - `merge`：将指定分支合并到当前分支，支持冲突处理与分叉点（split point）定位。
+  - `gc`：从所有分支引用、`HEAD` 与暂存区出发进行可达性分析，清理不可达的提交和 Blob 对象，并执行 SQLite `VACUUM` 回收磁盘空间。
 - **远程仓库基础命令**：
   - `add-remote`：添加远程仓库信息与关联路径或网络地址（支持本地目录路径与 `host:port` / `netty://host:port`）。
   - `rm-remote`：移除远程仓库配置。
@@ -98,6 +99,11 @@ java -jar target/syncvault-0.1.0-SNAPSHOT.jar push origin master
 java -jar target/syncvault-0.1.0-SNAPSHOT.jar web 8080
 ```
 
+执行垃圾回收清理不可达对象并收缩数据库体积：
+```bash
+java -jar target/syncvault-0.1.0-SNAPSHOT.jar gc
+```
+
 ## 测试
 
 ### 单元测试
@@ -125,6 +131,6 @@ java -jar target/syncvault-0.1.0-SNAPSHOT.jar bench 1000 5000 10000
 - [x] SQLite 存储
 - [x] Netty push/pull 多设备同步
 - [x] 三方合并改进 (Diff3 行级三方合并 + Web UI 冲突可视化)
-- [ ] gc 垃圾回收
+- [x] gc 垃圾回收
 - [x] Web UI (Vis.js 提交图)
 - [ ] 包名重命名 (gitlet -> io.github.nelxjoe306.syncvault)

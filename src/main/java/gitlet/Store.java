@@ -25,6 +25,26 @@ public class Store {
 
     public record CommitParent(String child, String parent, int idx) {}
 
+    public record ObjectStat(String hash, String type, long size) {}
+
+    public record GcResult(
+            int deletedCommits,
+            int deletedBlobs,
+            int keptCommits,
+            int keptBlobs,
+            long reclaimedObjectBytes,
+            long dbBytesBefore,
+            long dbBytesAfter
+    ) {
+        public int deletedObjects() {
+            return deletedCommits + deletedBlobs;
+        }
+
+        public int keptObjects() {
+            return keptCommits + keptBlobs;
+        }
+    }
+
     public static synchronized Session getDefault() {
         if (defaultSession == null) {
             defaultSession = open(Repository.GITLET_DIR);
@@ -201,6 +221,26 @@ public class Store {
 
     public static void transaction(ThrowingRunnable r) {
         getDefault().transaction(r);
+    }
+
+    public static List<ObjectStat> allObjects() {
+        return getDefault().allObjects();
+    }
+
+    public static List<String> allObjectHashes() {
+        return getDefault().allObjectHashes();
+    }
+
+    public static void deleteObjects(Collection<String> hashes) {
+        getDefault().deleteObjects(hashes);
+    }
+
+    public static void vacuum() {
+        getDefault().vacuum();
+    }
+
+    public static GcResult gc() {
+        return getDefault().gc();
     }
 
     /**
@@ -794,6 +834,185 @@ public class Store {
                     throw new GitletException(t.getMessage());
                 }
             }
+        }
+
+        public List<ObjectStat> allObjects() {
+            String sql = "SELECT hash, type, length(data) FROM object ORDER BY hash ASC";
+            List<ObjectStat> list = new ArrayList<>();
+            try (PreparedStatement pstmt = getConnection().prepareStatement(sql);
+                 ResultSet rs = pstmt.executeQuery()) {
+                while (rs.next()) {
+                    list.add(new ObjectStat(rs.getString(1), rs.getString(2), rs.getLong(3)));
+                }
+                return list;
+            } catch (SQLException e) {
+                throw new GitletException(e.getMessage());
+            }
+        }
+
+        public List<String> allObjectHashes() {
+            String sql = "SELECT hash FROM object ORDER BY hash ASC";
+            List<String> list = new ArrayList<>();
+            try (PreparedStatement pstmt = getConnection().prepareStatement(sql);
+                 ResultSet rs = pstmt.executeQuery()) {
+                while (rs.next()) {
+                    list.add(rs.getString(1));
+                }
+                return list;
+            } catch (SQLException e) {
+                throw new GitletException(e.getMessage());
+            }
+        }
+
+        public void deleteObjects(Collection<String> hashes) {
+            if (hashes == null || hashes.isEmpty()) {
+                return;
+            }
+            transaction(() -> {
+                try (PreparedStatement delObj = getConnection().prepareStatement("DELETE FROM object WHERE hash = ?");
+                     PreparedStatement delMeta = getConnection().prepareStatement("DELETE FROM commit_meta WHERE hash = ?");
+                     PreparedStatement delParentChild = getConnection().prepareStatement("DELETE FROM commit_parent WHERE child = ?");
+                     PreparedStatement delParentParent = getConnection().prepareStatement("DELETE FROM commit_parent WHERE parent = ?")) {
+                    for (String hash : hashes) {
+                        delObj.setString(1, hash);
+                        delObj.addBatch();
+                        delMeta.setString(1, hash);
+                        delMeta.addBatch();
+                        delParentChild.setString(1, hash);
+                        delParentChild.addBatch();
+                        delParentParent.setString(1, hash);
+                        delParentParent.addBatch();
+                    }
+                    delObj.executeBatch();
+                    delMeta.executeBatch();
+                    delParentChild.executeBatch();
+                    delParentParent.executeBatch();
+                }
+            });
+        }
+
+        public void vacuum() {
+            try (Statement stmt = getConnection().createStatement()) {
+                stmt.execute("VACUUM;");
+            } catch (SQLException e) {
+                throw new GitletException(e.getMessage());
+            }
+        }
+
+        public GcResult gc() {
+            long dbBefore = dbFile.exists() ? dbFile.length() : 0L;
+
+            final int[] counts = new int[4];
+            final long[] reclaimedBytes = new long[1];
+
+            transaction(() -> {
+                Set<String> reachableCommits = new HashSet<>();
+                Set<String> reachableBlobs = new HashSet<>();
+
+                for (String blobHash : stagedAdditions().values()) {
+                    if (blobHash != null && !blobHash.isEmpty()) {
+                        reachableBlobs.add(blobHash);
+                    }
+                }
+
+                Queue<String> commitQueue = new ArrayDeque<>();
+                for (String refTarget : allRefs().values()) {
+                    if (refTarget != null && !refTarget.isEmpty()) {
+                        commitQueue.add(refTarget);
+                    }
+                }
+                String head = getHead();
+                if (head != null && !head.isEmpty()) {
+                    String headRef = getRef(head);
+                    if (headRef != null && !headRef.isEmpty()) {
+                        commitQueue.add(headRef);
+                    } else {
+                        commitQueue.add(head);
+                    }
+                }
+
+                Map<String, List<String>> parentEdges = new HashMap<>();
+                for (CommitParent cp : allCommitParents()) {
+                    parentEdges.computeIfAbsent(cp.child(), k -> new ArrayList<>()).add(cp.parent());
+                }
+
+                while (!commitQueue.isEmpty()) {
+                    String commitHash = commitQueue.poll();
+                    if (commitHash == null || reachableCommits.contains(commitHash)) {
+                        continue;
+                    }
+                    Commit c = getCommit(commitHash);
+                    if (c == null) {
+                        continue;
+                    }
+                    reachableCommits.add(commitHash);
+
+                    if (c.getNameToHash() != null) {
+                        for (String blobHash : c.getNameToHash().values()) {
+                            if (blobHash != null && !blobHash.isEmpty()) {
+                                reachableBlobs.add(blobHash);
+                            }
+                        }
+                    }
+
+                    if (c.getParent() != null && !reachableCommits.contains(c.getParent())) {
+                        commitQueue.add(c.getParent());
+                    }
+                    if (c.getSecondParent() != null && !reachableCommits.contains(c.getSecondParent())) {
+                        commitQueue.add(c.getSecondParent());
+                    }
+                    List<String> extraParents = parentEdges.get(commitHash);
+                    if (extraParents != null) {
+                        for (String p : extraParents) {
+                            if (p != null && !reachableCommits.contains(p)) {
+                                commitQueue.add(p);
+                            }
+                        }
+                    }
+                }
+
+                List<ObjectStat> allObjs = allObjects();
+                List<String> unreachableHashes = new ArrayList<>();
+                for (ObjectStat obj : allObjs) {
+                    boolean reachable;
+                    if ("commit".equals(obj.type())) {
+                        reachable = reachableCommits.contains(obj.hash());
+                    } else if ("blob".equals(obj.type())) {
+                        reachable = reachableBlobs.contains(obj.hash());
+                    } else {
+                        reachable = reachableCommits.contains(obj.hash()) || reachableBlobs.contains(obj.hash());
+                    }
+
+                    if (reachable) {
+                        if ("commit".equals(obj.type())) {
+                            counts[2]++;
+                        } else {
+                            counts[3]++;
+                        }
+                    } else {
+                        unreachableHashes.add(obj.hash());
+                        reclaimedBytes[0] += obj.size();
+                        if ("commit".equals(obj.type())) {
+                            counts[0]++;
+                        } else {
+                            counts[1]++;
+                        }
+                    }
+                }
+
+                deleteObjects(unreachableHashes);
+
+                try (Statement stmt = getConnection().createStatement()) {
+                    stmt.executeUpdate("DELETE FROM commit_meta WHERE hash NOT IN (SELECT hash FROM object WHERE type = 'commit')");
+                    stmt.executeUpdate("DELETE FROM commit_parent WHERE child NOT IN (SELECT hash FROM commit_meta) OR parent NOT IN (SELECT hash FROM commit_meta)");
+                }
+            });
+
+            if (txDepth == 0) {
+                vacuum();
+            }
+            long dbAfter = dbFile.exists() ? dbFile.length() : 0L;
+            return new GcResult(counts[0], counts[1], counts[2], counts[3], reclaimedBytes[0], dbBefore, dbAfter);
         }
     }
 }

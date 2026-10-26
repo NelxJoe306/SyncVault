@@ -992,6 +992,28 @@ public class Repository {
         return web(WebServer.DEFAULT_PORT);
     }
 
+    /**
+     * Runs garbage collection on the current repository: marks all objects
+     * reachable from refs, HEAD, and staged additions, deletes unreachable
+     * commits and blobs, cleans orphan commit metadata, and runs VACUUM.
+     *
+     * @return summary statistics of the garbage collection run
+     */
+    public static Store.GcResult gc() {
+        Store.GcResult res = Store.gc();
+        System.out.printf(
+                "Garbage collection complete: removed %d unreachable objects (%d commits, %d blobs), reclaimed %d bytes (kept %d objects, db %d -> %d bytes).%n",
+                res.deletedObjects(),
+                res.deletedCommits(),
+                res.deletedBlobs(),
+                res.reclaimedObjectBytes(),
+                res.keptObjects(),
+                res.dbBytesBefore(),
+                res.dbBytesAfter()
+        );
+        return res;
+    }
+
     static boolean isNetworkRemote(String remotePath) {
         if (remotePath == null) {
             return false;

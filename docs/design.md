@@ -249,3 +249,8 @@ SyncVault 定位于多设备分布式资产同步与版本控制系统：
 - Java 序列化字节里包含类的 `serialVersionUID`。为了让存储层访问提交信息，`Commit` 新增了 `getMessage()` / `getTimestamp()`，这会改变 Java 自动计算的 UID，从而改变所有 commit id。因此 `Commit` 显式固定 `serialVersionUID = -1296720244208386047L`（即迁移前类的自动计算值），初始提交的 id 仍是 `15fd3b34…dd01`，与文件存储版本逐字节一致（有单元测试 `CommitIdTest` 守护）。
 - Blob ID 依然严格等于文件原始字节的内容哈希（`Utils.hash(fileBytes)`）。
 - 对象寻址机制与历史数据兼容，保证了计算的纯粹性与可验证性。
+
+### 8. 垃圾回收 (Garbage Collection, `gc`)
+
+- **可达性分析（Mark）**：以 `ref` 表中的所有分支与远程跟踪引用、当前 `HEAD`（通过分支解析或直接指向的游离提交）以及 `stage_add` 暂存区中的 Blob 哈希作为根集合（live roots）。对所有根提交执行 BFS，沿着父提交链（包含第一、第二父提交及 `commit_parent` 记录）遍历全部可达提交，并将每个可达提交快照（`nameToHash`）引用的 Blob 哈希加入可达集合。
+- **批量删除与空间回收（Sweep + VACUUM）**：在单个 SQLite 事务内，从 `object` 表中批量删除所有不可达的 `commit` 与 `blob` 对象，同时清理 `commit_meta` 和 `commit_parent` 中对应的孤立记录；事务提交后执行 `VACUUM` 重建数据库页，使 `.gitlet/gitlet.db` 文件体积在磁盘上实际收缩。

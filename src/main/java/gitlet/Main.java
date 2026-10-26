@@ -31,6 +31,7 @@ public class Main {
      * pull
      * serve
      * web
+     * gc
      */
     public static void main(String[] args) throws IOException {
         if (args.length == 0) {
@@ -227,6 +228,13 @@ public class Main {
                     System.out.println("Incorrect operands.");
                     System.exit(0);
                 }
+                break;
+            case "gc":
+                if (args.length != 1) {
+                    System.out.println("Incorrect operands.");
+                    System.exit(0);
+                }
+                Repository.gc();
                 break;
             default:
                 System.out.println("No command with that name exists.");

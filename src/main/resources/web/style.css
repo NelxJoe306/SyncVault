@@ -871,6 +871,22 @@ body{
   font:400 11.5px/1 var(--mono);
   color:var(--ink-3);
 }
+.worktree-label{
+  padding:.45rem .7rem .2rem;
+  font:600 11px/1.4 var(--mono);
+  letter-spacing:.04em;
+  text-transform:uppercase;
+  color:var(--ink-3);
+}
+.conflict-worktree-note{
+  margin:0 0 .65rem;
+  padding:.5rem .75rem;
+  font:500 12px/1.4 var(--mono);
+  color:var(--ink-2);
+  background:var(--sunk);
+  border:1px solid var(--line);
+  border-radius:var(--r-sm);
+}
 .conflict-actions{
   display:inline-flex;
   align-items:center;

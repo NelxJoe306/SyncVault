@@ -331,6 +331,23 @@ public class WebServerTest {
         HttpClient client = HttpClient.newHttpClient();
         String baseUrl = "http://127.0.0.1:" + port;
 
+        // Working-tree view is the conflict the resolve buttons act on.
+        HttpResponse<String> worktreeBefore = client.send(
+                HttpRequest.newBuilder(URI.create(baseUrl + "/api/worktree?path=app.txt")).GET().build(),
+                HttpResponse.BodyHandlers.ofString(StandardCharsets.UTF_8)
+        );
+        assertEquals(200, worktreeBefore.statusCode());
+        assertTrue(worktreeBefore.body().contains("\"worktree\":true"));
+        assertTrue(worktreeBefore.body().contains("\"conflict\":true"));
+        assertTrue(worktreeBefore.body().contains("<<<<<<< HEAD"));
+
+        HttpResponse<String> worktreeEscape = client.send(
+                HttpRequest.newBuilder(URI.create(baseUrl + "/api/worktree?path=../outside.txt")).GET().build(),
+                HttpResponse.BodyHandlers.ofString(StandardCharsets.UTF_8)
+        );
+        assertEquals(400, worktreeEscape.statusCode());
+        assertTrue(worktreeEscape.body().contains("Invalid file path."));
+
         // 1. Happy path: POST /api/resolve choosing "theirs"
         HttpResponse<String> resolveRes = client.send(
                 HttpRequest.newBuilder(URI.create(baseUrl + "/api/resolve"))
@@ -342,6 +359,7 @@ public class WebServerTest {
         assertEquals(200, resolveRes.statusCode());
         String resolveJson = resolveRes.body();
         assertTrue(resolveJson.contains("\"ok\":true"));
+        assertTrue(resolveJson.contains("\"worktree\":true"));
         assertTrue(resolveJson.contains("\"staged\":true"));
         assertTrue(resolveJson.contains("\"conflict\":false"));
         assertTrue(resolveJson.contains("\"conflictCount\":0"));
@@ -353,23 +371,48 @@ public class WebServerTest {
         String expectedHash = Utils.hash(expectedResolved.getBytes(StandardCharsets.UTF_8));
         assertEquals(expectedHash, Store.stagedAdditions().get("app.txt"));
 
-        // Subsequent commit detail and blob queries on HEAD should show conflict cleared
+        // Commit snapshot keeps the conflicted blob. Resolution shows up on the worktree and in status.
         HttpResponse<String> detailAfterRes = client.send(
                 HttpRequest.newBuilder(URI.create(baseUrl + "/api/commits/" + cMerge)).GET().build(),
                 HttpResponse.BodyHandlers.ofString(StandardCharsets.UTF_8)
         );
         assertEquals(200, detailAfterRes.statusCode());
-        assertTrue(detailAfterRes.body().contains("\"hasConflicts\":false"));
-        assertTrue(detailAfterRes.body().contains("\"conflictCount\":0"));
-        assertTrue(detailAfterRes.body().contains("\"staged\":true"));
+        String detailAfter = detailAfterRes.body();
+        assertTrue(detailAfter.contains("\"hasConflicts\":true"));
+        assertTrue(detailAfter.contains("\"conflictCount\":1"));
+        assertTrue(detailAfter.contains("\"conflict\":true"));
+        assertTrue(detailAfter.contains("\"blobHash\":\"" + mergedHash + "\""));
+        assertFalse(detailAfter.contains("\"blobHash\":\"" + expectedHash + "\""));
 
         HttpResponse<String> blobAfterRes = client.send(
                 HttpRequest.newBuilder(URI.create(baseUrl + "/api/commits/" + cMerge + "/blob?path=app.txt")).GET().build(),
                 HttpResponse.BodyHandlers.ofString(StandardCharsets.UTF_8)
         );
         assertEquals(200, blobAfterRes.statusCode());
-        assertTrue(blobAfterRes.body().contains("\"conflict\":false"));
-        assertTrue(blobAfterRes.body().contains("\"staged\":true"));
+        String blobAfter = blobAfterRes.body();
+        assertTrue(blobAfter.contains("\"conflict\":true"));
+        assertTrue(blobAfter.contains("\"blobHash\":\"" + mergedHash + "\""));
+        assertTrue(blobAfter.contains("<<<<<<< HEAD"));
+        assertFalse(blobAfter.contains("\"worktree\":true"));
+        assertFalse(blobAfter.contains("header-ours\\ntheirs-change\\nfooter\\n"));
+
+        HttpResponse<String> statusAfter = client.send(
+                HttpRequest.newBuilder(URI.create(baseUrl + "/api/status")).GET().build(),
+                HttpResponse.BodyHandlers.ofString(StandardCharsets.UTF_8)
+        );
+        assertEquals(200, statusAfter.statusCode());
+        assertTrue(statusAfter.body().contains("\"conflictedFiles\":[]"));
+        assertTrue(statusAfter.body().contains("\"stagedAdditions\":[\"app.txt\"]"));
+
+        HttpResponse<String> worktreeAfter = client.send(
+                HttpRequest.newBuilder(URI.create(baseUrl + "/api/worktree?path=app.txt")).GET().build(),
+                HttpResponse.BodyHandlers.ofString(StandardCharsets.UTF_8)
+        );
+        assertEquals(200, worktreeAfter.statusCode());
+        assertTrue(worktreeAfter.body().contains("\"worktree\":true"));
+        assertTrue(worktreeAfter.body().contains("\"conflict\":false"));
+        assertTrue(worktreeAfter.body().contains("\"staged\":true"));
+        assertTrue(worktreeAfter.body().contains("header-ours\\ntheirs-change\\nfooter\\n"));
 
         // 2. Bad path: resolving an already-clean file (no conflict markers) -> 400
         HttpResponse<String> noMarkerRes = client.send(

@@ -11,6 +11,7 @@ import java.net.InetSocketAddress;
 import java.net.URI;
 import java.net.URLDecoder;
 import java.nio.charset.StandardCharsets;
+import java.nio.file.Path;
 import java.text.SimpleDateFormat;
 import java.util.*;
 import java.util.concurrent.CountDownLatch;
@@ -161,6 +162,11 @@ public class WebServer implements AutoCloseable {
                 return;
             }
 
+            if ("/api/worktree".equals(path)) {
+                handleWorktree(exchange, parseQuery(uri.getRawQuery()));
+                return;
+            }
+
             Map<String, String> query = parseQuery(uri.getRawQuery());
 
             if ("/api/commit".equals(path)) {
@@ -301,7 +307,6 @@ public class WebServer implements AutoCloseable {
             Map<String, String> refsMap = session.allRefs();
             String headCommit = (headBranch != null) ? refsMap.get(headBranch) : null;
             boolean isHead = Objects.equals(fullHash, headCommit);
-            TreeMap<String, String> stagedAdd = isHead ? session.stagedAdditions() : new TreeMap<>();
 
             List<String> commitRefs = new ArrayList<>();
             for (Map.Entry<String, String> entry : refsMap.entrySet()) {
@@ -328,8 +333,7 @@ public class WebServer implements AutoCloseable {
             if (nameToHash != null) {
                 for (Map.Entry<String, String> entry : nameToHash.entrySet()) {
                     String filePath = entry.getKey();
-                    boolean isStaged = isHead && stagedAdd.containsKey(filePath);
-                    String blobHash = isStaged ? stagedAdd.get(filePath) : entry.getValue();
+                    String blobHash = entry.getValue();
                     byte[] blobBytes = session.getBlob(blobHash);
                     int size = (blobBytes != null) ? blobBytes.length : 0;
                     boolean hasConflict = blobBytes != null && Diff3.hasConflictMarkers(blobBytes);
@@ -343,7 +347,6 @@ public class WebServer implements AutoCloseable {
                     fileInfo.put("shortBlobHash", shortHash(blobHash));
                     fileInfo.put("size", size);
                     fileInfo.put("conflict", hasConflict);
-                    fileInfo.put("staged", isStaged);
                     if (isMerge) {
                         String p1Blob = firstParentCommit.getNameToHash() != null
                                 ? firstParentCommit.getNameToHash().get(filePath) : null;
@@ -396,14 +399,7 @@ public class WebServer implements AutoCloseable {
                 sendJson(exchange, 404, Map.of("error", "No commit with that id exists."));
                 return;
             }
-            String headBranch = session.getHead();
-            Map<String, String> refsMap = session.allRefs();
-            String headCommit = (headBranch != null) ? refsMap.get(headBranch) : null;
-            boolean isHead = Objects.equals(fullHash, headCommit);
-            TreeMap<String, String> stagedAdd = isHead ? session.stagedAdditions() : new TreeMap<>();
-            boolean isStaged = isHead && stagedAdd.containsKey(filePath);
-
-            String blobHash = isStaged ? stagedAdd.get(filePath) : commit.getNameToHash().get(filePath);
+            String blobHash = commit.getNameToHash().get(filePath);
             if (blobHash == null) {
                 sendJson(exchange, 404, Map.of("error", "File does not exist in that commit."));
                 return;
@@ -414,7 +410,6 @@ public class WebServer implements AutoCloseable {
                 return;
             }
             response = buildBlobPayload(filePath, fullHash, blobHash, bytes);
-            response.put("staged", isStaged);
             if (commit.getParent() != null && commit.getSecondParent() != null) {
                 Commit p1 = session.getCommit(commit.getParent());
                 Commit p2 = session.getCommit(commit.getSecondParent());
@@ -478,6 +473,41 @@ public class WebServer implements AutoCloseable {
         sendJson(exchange, 200, response);
     }
 
+    /**
+     * Returns the working-tree file at {@code path} (the same path {@code resolve} would edit).
+     * Commit snapshots are not consulted.
+     */
+    private void handleWorktree(HttpExchange exchange, Map<String, String> query) throws IOException {
+        String filePath = query.get("path");
+        if (filePath == null || filePath.isBlank()) {
+            sendJson(exchange, 400, Map.of("error", "File path is required."));
+            return;
+        }
+        try {
+            File workDir = Repository.workDirForSession(session);
+            Path rootPath = workDir.toPath().toAbsolutePath().normalize();
+            Path targetPath = Repository.resolveSafeRepoPath(rootPath, filePath);
+            File targetFile = targetPath.toFile();
+            if (!targetFile.exists() || !targetFile.isFile()) {
+                sendJson(exchange, 404, Map.of("error", "File does not exist."));
+                return;
+            }
+            byte[] bytes = Utils.readContents(targetFile);
+            String relPath = rootPath.relativize(targetPath).toString().replace(File.separatorChar, '/');
+            Map<String, Object> response;
+            synchronized (session) {
+                response = buildBlobPayload(relPath, null, Utils.hash(bytes), bytes);
+                response.put("worktree", true);
+                response.put("staged", session.stagedAdditions().containsKey(relPath));
+            }
+            sendJson(exchange, 200, response);
+        } catch (GitletException e) {
+            String msg = e.getMessage() != null ? e.getMessage() : "Invalid file path.";
+            int status = "File does not exist.".equals(msg) ? 404 : 400;
+            sendJson(exchange, status, Map.of("error", msg));
+        }
+    }
+
     private void handleResolve(HttpExchange exchange, Map<String, String> query) throws IOException {
         String body;
         try (InputStream in = exchange.getRequestBody()) {
@@ -513,6 +543,7 @@ public class WebServer implements AutoCloseable {
                 response.put("ok", true);
                 response.put("side", normalizedSide);
                 response.put("staged", true);
+                response.put("worktree", true);
             }
             sendJson(exchange, 200, response);
         } catch (GitletException e) {

@@ -193,40 +193,12 @@ public class Main {
                 Repository.rm_remote(args[1]);
                 break;
             case "push":
-                if (args.length != 3) {
-                    System.out.println("Incorrect operands.");
-                    System.exit(0);
-                }
-                Repository.push(args[1], args[2]);
-                break;
             case "fetch":
-                if (args.length != 3) {
-                    System.out.println("Incorrect operands.");
-                    System.exit(0);
-                }
-                Repository.fetch(args[1], args[2]);
-                break;
             case "pull":
-                if (args.length != 3) {
-                    System.out.println("Incorrect operands.");
-                    System.exit(0);
-                }
-                Repository.pull(args[1], args[2]);
+                handleRemoteSync(firstArg, args);
                 break;
             case "serve":
-                if (args.length == 1) {
-                    Repository.serve(NettyServer.DEFAULT_PORT).await();
-                } else if (args.length == 2) {
-                    try {
-                        Repository.serve(Integer.parseInt(args[1])).await();
-                    } catch (NumberFormatException e) {
-                        System.out.println("Incorrect operands.");
-                        System.exit(0);
-                    }
-                } else {
-                    System.out.println("Incorrect operands.");
-                    System.exit(0);
-                }
+                handleServe(args);
                 break;
             case "web":
                 if (args.length == 1) {
@@ -258,6 +230,118 @@ public class Main {
             default:
                 System.out.println("No command with that name exists.");
                 System.exit(0);
+        }
+    }
+
+    private static void handleRemoteSync(String cmd, String[] args) throws IOException {
+        java.util.List<String> positionals = new java.util.ArrayList<>();
+        String token = null;
+        File tlsCa = null;
+        boolean tlsInsecure = false;
+        boolean forceTls = false;
+
+        for (int i = 1; i < args.length; i++) {
+            String arg = args[i];
+            if (arg.startsWith("--token=")) {
+                token = arg.substring("--token=".length());
+            } else if (arg.equals("--token") && i + 1 < args.length) {
+                token = args[++i];
+            } else if (arg.startsWith("--tls-ca=")) {
+                tlsCa = new File(arg.substring("--tls-ca=".length()));
+            } else if (arg.equals("--tls-ca") && i + 1 < args.length) {
+                tlsCa = new File(args[++i]);
+            } else if (arg.equals("--tls-insecure")) {
+                tlsInsecure = true;
+            } else if (arg.equals("--tls")) {
+                forceTls = true;
+            } else if (arg.startsWith("--")) {
+                System.out.println("Incorrect operands.");
+                System.exit(0);
+                return;
+            } else {
+                positionals.add(arg);
+            }
+        }
+
+        if (positionals.size() != 2) {
+            System.out.println("Incorrect operands.");
+            System.exit(0);
+            return;
+        }
+
+        String remoteName = positionals.get(0);
+        String branchName = positionals.get(1);
+        try {
+            switch (cmd) {
+                case "push":
+                    Repository.push(remoteName, branchName, token, tlsCa, tlsInsecure, forceTls);
+                    break;
+                case "fetch":
+                    Repository.fetch(remoteName, branchName, token, tlsCa, tlsInsecure, forceTls);
+                    break;
+                case "pull":
+                    Repository.pull(remoteName, branchName, token, tlsCa, tlsInsecure, forceTls);
+                    break;
+                default:
+                    break;
+            }
+        } catch (GitletException e) {
+            System.out.println(e.getMessage());
+            System.exit(0);
+        }
+    }
+
+    private static void handleServe(String[] args) {
+        Integer port = null;
+        String token = null;
+        File tlsCert = null;
+        File tlsKey = null;
+
+        for (int i = 1; i < args.length; i++) {
+            String arg = args[i];
+            if (arg.startsWith("--token=")) {
+                token = arg.substring("--token=".length());
+            } else if (arg.equals("--token") && i + 1 < args.length) {
+                token = args[++i];
+            } else if (arg.startsWith("--tls-cert=")) {
+                tlsCert = new File(arg.substring("--tls-cert=".length()));
+            } else if (arg.equals("--tls-cert") && i + 1 < args.length) {
+                tlsCert = new File(args[++i]);
+            } else if (arg.startsWith("--tls-key=")) {
+                tlsKey = new File(arg.substring("--tls-key=".length()));
+            } else if (arg.equals("--tls-key") && i + 1 < args.length) {
+                tlsKey = new File(args[++i]);
+            } else if (arg.startsWith("--")) {
+                System.out.println("Incorrect operands.");
+                System.exit(0);
+                return;
+            } else if (port == null) {
+                try {
+                    int parsed = Integer.parseInt(arg);
+                    if (parsed < 0 || parsed > 65535) {
+                        System.out.println("Incorrect operands.");
+                        System.exit(0);
+                        return;
+                    }
+                    port = parsed;
+                } catch (NumberFormatException e) {
+                    System.out.println("Incorrect operands.");
+                    System.exit(0);
+                    return;
+                }
+            } else {
+                System.out.println("Incorrect operands.");
+                System.exit(0);
+                return;
+            }
+        }
+
+        int targetPort = (port != null) ? port : NettyServer.DEFAULT_PORT;
+        try {
+            Repository.serve(targetPort, token, tlsCert, tlsKey).await();
+        } catch (GitletException e) {
+            System.out.println(e.getMessage());
+            System.exit(0);
         }
     }
 }

@@ -7,9 +7,13 @@ import io.netty.channel.socket.SocketChannel;
 import io.netty.channel.socket.nio.NioServerSocketChannel;
 import io.netty.handler.codec.LengthFieldBasedFrameDecoder;
 import io.netty.handler.codec.LengthFieldPrepender;
+import io.netty.handler.ssl.SslContext;
+import io.netty.handler.ssl.SslContextBuilder;
 
 import java.io.File;
 import java.net.InetSocketAddress;
+import java.nio.charset.StandardCharsets;
+import java.security.MessageDigest;
 import java.util.*;
 import java.util.concurrent.TimeUnit;
 
@@ -20,10 +24,15 @@ public class NettyServer implements AutoCloseable {
 
     public static final int DEFAULT_PORT = 9418;
     public static final int MAX_FRAME_BYTES = 64 * 1024 * 1024;
+    public static final String AUTH_FAILED_MESSAGE = "Authentication failed: invalid or missing sync token.";
 
     private final Store.Session session;
     private final boolean ownsSession;
     private final int requestedPort;
+    private final String explicitToken;
+    private final File tlsCertFile;
+    private final File tlsKeyFile;
+    private SslContext sslContext;
     private EventLoopGroup bossGroup;
     private EventLoopGroup workerGroup;
     private Channel serverChannel;
@@ -34,34 +43,93 @@ public class NettyServer implements AutoCloseable {
     }
 
     public NettyServer(File gitletDir, int port) {
-        this(Store.open(gitletDir), port, true);
+        this(Store.open(gitletDir), port, true, null, null, null);
+    }
+
+    public NettyServer(File gitletDir, int port, String token, File tlsCertFile, File tlsKeyFile) {
+        this(Store.open(gitletDir), port, true, token, tlsCertFile, tlsKeyFile);
     }
 
     public NettyServer(Store.Session session, int port) {
-        this(session, port, false);
+        this(session, port, false, null, null, null);
     }
 
-    private NettyServer(Store.Session session, int port, boolean ownsSession) {
+    public NettyServer(Store.Session session, int port, String token, File tlsCertFile, File tlsKeyFile) {
+        this(session, port, false, token, tlsCertFile, tlsKeyFile);
+    }
+
+    private NettyServer(Store.Session session, int port, boolean ownsSession,
+                        String explicitToken, File tlsCertFile, File tlsKeyFile) {
         this.session = session;
         this.ownsSession = ownsSession;
         this.requestedPort = port;
+        this.explicitToken = explicitToken;
+        this.tlsCertFile = tlsCertFile;
+        this.tlsKeyFile = tlsKeyFile;
+    }
+
+    static SslContext buildServerSslContext(File certFile, File keyFile) {
+        if (certFile == null && keyFile == null) {
+            return null;
+        }
+        if (certFile == null || keyFile == null) {
+            throw new GitletException("TLS configuration error: both certificate and private key files are required.");
+        }
+        if (!certFile.exists() || !certFile.isFile()) {
+            throw new GitletException("TLS certificate file not found: " + certFile.getPath());
+        }
+        if (!keyFile.exists() || !keyFile.isFile()) {
+            throw new GitletException("TLS private key file not found: " + keyFile.getPath());
+        }
+        try {
+            return SslContextBuilder.forServer(certFile, keyFile).build();
+        } catch (Exception e) {
+            throw new GitletException("Failed to initialize server TLS context: " + e.getMessage());
+        }
+    }
+
+    private String resolveExpectedToken() {
+        return Repository.resolveSyncToken(explicitToken, Repository.gitletDirForSession(session));
+    }
+
+    private SslContext resolveSslContext() {
+        File cert = (tlsCertFile != null) ? tlsCertFile : Repository.envFile(Repository.ENV_TLS_CERT);
+        File key = (tlsKeyFile != null) ? tlsKeyFile : Repository.envFile(Repository.ENV_TLS_KEY);
+        return buildServerSslContext(cert, key);
+    }
+
+    public boolean isTlsEnabled() {
+        return sslContext != null;
     }
 
     public NettyServer start() {
+        try {
+            this.sslContext = resolveSslContext();
+        } catch (RuntimeException e) {
+            if (ownsSession && session != null) {
+                session.close();
+            }
+            throw e;
+        }
         bossGroup = new NioEventLoopGroup(1);
         workerGroup = new NioEventLoopGroup(1);
         try {
+            final SslContext activeSsl = this.sslContext;
             ServerBootstrap b = new ServerBootstrap();
             b.group(bossGroup, workerGroup)
                     .channel(NioServerSocketChannel.class)
                     .childHandler(new ChannelInitializer<SocketChannel>() {
                         @Override
                         protected void initChannel(SocketChannel ch) {
-                            ch.pipeline().addLast(
+                            ChannelPipeline pipeline = ch.pipeline();
+                            if (activeSsl != null) {
+                                pipeline.addLast(activeSsl.newHandler(ch.alloc()));
+                            }
+                            pipeline.addLast(
                                     new LengthFieldBasedFrameDecoder(MAX_FRAME_BYTES, 0, 4, 0, 4),
                                     new LengthFieldPrepender(4),
                                     new SyncMessage.Codec(),
-                                    new ServerHandler(session)
+                                    new ServerHandler(session, resolveExpectedToken())
                             );
                         }
                     });
@@ -118,9 +186,25 @@ public class NettyServer implements AutoCloseable {
 
     private static class ServerHandler extends SimpleChannelInboundHandler<SyncMessage> {
         private final Store.Session session;
+        private final String expectedToken;
+        private boolean authenticated = false;
 
-        ServerHandler(Store.Session session) {
+        ServerHandler(Store.Session session, String expectedToken) {
             this.session = session;
+            this.expectedToken = expectedToken;
+        }
+
+        private boolean verifyToken(String clientToken) {
+            if (expectedToken == null || expectedToken.isEmpty()) {
+                return true;
+            }
+            if (clientToken == null || clientToken.isEmpty()) {
+                return false;
+            }
+            return MessageDigest.isEqual(
+                    expectedToken.getBytes(StandardCharsets.UTF_8),
+                    clientToken.getBytes(StandardCharsets.UTF_8)
+            );
         }
 
         @Override
@@ -128,18 +212,40 @@ public class NettyServer implements AutoCloseable {
             synchronized (session) {
                 switch (msg.type) {
                     case HELLO:
-                        ctx.writeAndFlush(SyncMessage.helloOk());
+                        if (!verifyToken(msg.token)) {
+                            authenticated = false;
+                            ctx.writeAndFlush(SyncMessage.error(AUTH_FAILED_MESSAGE));
+                        } else {
+                            authenticated = true;
+                            ctx.writeAndFlush(SyncMessage.helloOk());
+                        }
                         break;
                     case FETCH_REQ:
+                        if (!authenticated) {
+                            ctx.writeAndFlush(SyncMessage.error(AUTH_FAILED_MESSAGE));
+                            break;
+                        }
                         handleFetchReq(ctx, msg);
                         break;
                     case FETCH_HAVE:
+                        if (!authenticated) {
+                            ctx.writeAndFlush(SyncMessage.error(AUTH_FAILED_MESSAGE));
+                            break;
+                        }
                         handleFetchHave(ctx, msg);
                         break;
                     case PUSH_REQ:
+                        if (!authenticated) {
+                            ctx.writeAndFlush(SyncMessage.error(AUTH_FAILED_MESSAGE));
+                            break;
+                        }
                         handlePushReq(ctx, msg);
                         break;
                     case PUSH_OBJECTS:
+                        if (!authenticated) {
+                            ctx.writeAndFlush(SyncMessage.error(AUTH_FAILED_MESSAGE));
+                            break;
+                        }
                         handlePushObjects(ctx, msg);
                         break;
                     case ACK:

@@ -804,6 +804,16 @@ public class Repository {
         Store.removeRemote(name);
     }
 
+    /** Environment variable and file names for sync authentication and TLS. */
+    public static final String ENV_SYNC_TOKEN = "GITLET_SYNC_TOKEN";
+    public static final String SYNC_TOKEN_FILE = "sync-token";
+    public static final String ENV_TLS_CERT = "GITLET_TLS_CERT";
+    public static final String ENV_TLS_KEY = "GITLET_TLS_KEY";
+    public static final String ENV_TLS_CA = "GITLET_TLS_CA";
+    public static final String ENV_TLS_INSECURE = "GITLET_TLS_INSECURE";
+    public static final String ENV_TLS = "GITLET_TLS";
+    public static final String TLS_CA_FILE = "tls-ca.pem";
+
     /**
      * Attempts to append the current branch's commits to the end of the given branch at the given remote.
      *
@@ -811,6 +821,16 @@ public class Repository {
      * @param branchName remote branch name
      */
     public static void push(String remoteName, String branchName) throws IOException {
+        push(remoteName, branchName, null, null, false, false);
+    }
+
+    public static void push(String remoteName, String branchName,
+                            String token, File tlsCaFile, boolean tlsInsecure) throws IOException {
+        push(remoteName, branchName, token, tlsCaFile, tlsInsecure, false);
+    }
+
+    public static void push(String remoteName, String branchName,
+                            String token, File tlsCaFile, boolean tlsInsecure, boolean forceTls) throws IOException {
         String remotePath = Store.getRemote(remoteName);
         if (remotePath == null) {
             System.out.println("Remote directory not found.");
@@ -820,7 +840,7 @@ public class Repository {
             String headBranch = Store.getHead();
             String localHead = (headBranch != null && Store.getRef(headBranch) != null)
                     ? Store.getRef(headBranch) : currHead;
-            NettyClient.push(remotePath, branchName, localHead);
+            NettyClient.push(remotePath, branchName, localHead, token, tlsCaFile, tlsInsecure, forceTls);
             return;
         }
         File remoteGitlet = new File(remotePath);
@@ -895,13 +915,23 @@ public class Repository {
      * @param branchName remote branch name
      */
     public static void fetch(String remoteName, String branchName) throws IOException {
+        fetch(remoteName, branchName, null, null, false, false);
+    }
+
+    public static void fetch(String remoteName, String branchName,
+                             String token, File tlsCaFile, boolean tlsInsecure) throws IOException {
+        fetch(remoteName, branchName, token, tlsCaFile, tlsInsecure, false);
+    }
+
+    public static void fetch(String remoteName, String branchName,
+                             String token, File tlsCaFile, boolean tlsInsecure, boolean forceTls) throws IOException {
         String remotePath = Store.getRemote(remoteName);
         if (remotePath == null) {
             System.out.println("Remote directory not found.");
             System.exit(0);
         }
         if (isNetworkRemote(remotePath)) {
-            NettyClient.fetch(remoteName, remotePath, branchName);
+            NettyClient.fetch(remoteName, remotePath, branchName, token, tlsCaFile, tlsInsecure, forceTls);
             return;
         }
         File remoteGitlet = new File(remotePath);
@@ -962,7 +992,12 @@ public class Repository {
      * @param branchName remote branch name
      */
     public static void pull(String remoteName, String branchName) throws IOException {
-        fetch(remoteName, branchName);
+        pull(remoteName, branchName, null, null, false, false);
+    }
+
+    public static void pull(String remoteName, String branchName,
+                            String token, File tlsCaFile, boolean tlsInsecure, boolean forceTls) throws IOException {
+        fetch(remoteName, branchName, token, tlsCaFile, tlsInsecure, forceTls);
         merge(remoteName + "/" + branchName);
     }
 
@@ -973,7 +1008,11 @@ public class Repository {
      * @return running NettyServer handle
      */
     public static NettyServer serve(int port) {
-        return new NettyServer(Store.getDefault().getDbFile(), port).start();
+        return serve(port, null, null, null);
+    }
+
+    public static NettyServer serve(int port, String token, File tlsCertFile, File tlsKeyFile) {
+        return new NettyServer(Store.getDefault().getDbFile(), port, token, tlsCertFile, tlsKeyFile).start();
     }
 
     public static NettyServer serve() {
@@ -1164,13 +1203,57 @@ public class Repository {
         if (remotePath == null) {
             return false;
         }
-        if (remotePath.startsWith("netty://")) {
+        if (remotePath.startsWith("netty://") || remotePath.startsWith("nettys://")) {
             return true;
         }
         if (remotePath.contains("/") || remotePath.contains("\\")) {
             return false;
         }
         return remotePath.matches("^(\\[[0-9a-fA-F:]+\\]|[A-Za-z0-9._-]+):\\d{1,5}$");
+    }
+
+    public static String resolveSyncToken(File gitletDir) {
+        return resolveSyncToken(null, System.getenv(ENV_SYNC_TOKEN), gitletDir);
+    }
+
+    public static String resolveSyncToken(String explicitToken, File gitletDir) {
+        return resolveSyncToken(explicitToken, System.getenv(ENV_SYNC_TOKEN), gitletDir);
+    }
+
+    static String resolveSyncToken(String explicitToken, String envToken, File gitletDir) {
+        if (explicitToken != null && !explicitToken.trim().isEmpty()) {
+            return explicitToken.trim();
+        }
+        if (envToken != null && !envToken.trim().isEmpty()) {
+            return envToken.trim();
+        }
+        if (gitletDir != null) {
+            File tokenFile = new File(gitletDir, SYNC_TOKEN_FILE);
+            if (tokenFile.exists() && tokenFile.isFile()) {
+                String content = readContentsAsString(tokenFile).trim();
+                if (!content.isEmpty()) {
+                    return content;
+                }
+            }
+        }
+        return null;
+    }
+
+    static File envFile(String envName) {
+        String val = System.getenv(envName);
+        if (val != null && !val.trim().isEmpty()) {
+            return new File(val.trim());
+        }
+        return null;
+    }
+
+    static boolean envBool(String envName) {
+        String val = System.getenv(envName);
+        if (val == null) {
+            return false;
+        }
+        String trimmed = val.trim();
+        return "true".equalsIgnoreCase(trimmed) || "1".equals(trimmed);
     }
 
     static boolean isAncestor(String head, String target) {

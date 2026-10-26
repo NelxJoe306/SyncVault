@@ -10,11 +10,6 @@ import java.io.OutputStream;
 import java.net.InetSocketAddress;
 import java.net.URI;
 import java.net.URLDecoder;
-import java.nio.ByteBuffer;
-import java.nio.CharBuffer;
-import java.nio.charset.CharacterCodingException;
-import java.nio.charset.CharsetDecoder;
-import java.nio.charset.CodingErrorAction;
 import java.nio.charset.StandardCharsets;
 import java.text.SimpleDateFormat;
 import java.util.*;
@@ -302,6 +297,11 @@ public class WebServer implements AutoCloseable {
                 parents.add(commit.getSecondParent());
             }
 
+            Commit firstParentCommit = (commit.getParent() != null) ? session.getCommit(commit.getParent()) : null;
+            Commit secondParentCommit = (commit.getSecondParent() != null) ? session.getCommit(commit.getSecondParent()) : null;
+            boolean isMerge = firstParentCommit != null && secondParentCommit != null;
+
+            int conflictFileCount = 0;
             List<Map<String, Object>> files = new ArrayList<>();
             TreeMap<String, String> nameToHash = commit.getNameToHash();
             if (nameToHash != null) {
@@ -310,12 +310,29 @@ public class WebServer implements AutoCloseable {
                     String blobHash = entry.getValue();
                     byte[] blobBytes = session.getBlob(blobHash);
                     int size = (blobBytes != null) ? blobBytes.length : 0;
+                    boolean hasConflict = blobBytes != null && Diff3.hasConflictMarkers(blobBytes);
+                    if (hasConflict) {
+                        conflictFileCount++;
+                    }
 
                     Map<String, Object> fileInfo = new LinkedHashMap<>();
                     fileInfo.put("path", filePath);
                     fileInfo.put("blobHash", blobHash);
                     fileInfo.put("shortBlobHash", shortHash(blobHash));
                     fileInfo.put("size", size);
+                    fileInfo.put("conflict", hasConflict);
+                    if (isMerge) {
+                        String p1Blob = firstParentCommit.getNameToHash() != null
+                                ? firstParentCommit.getNameToHash().get(filePath) : null;
+                        String p2Blob = secondParentCommit.getNameToHash() != null
+                                ? secondParentCommit.getNameToHash().get(filePath) : null;
+                        boolean parentsDiffer = !Objects.equals(p1Blob, p2Blob);
+                        fileInfo.put("parentsDiffer", parentsDiffer);
+                        if (hasConflict && parentsDiffer) {
+                            fileInfo.put("oursParent", commit.getParent());
+                            fileInfo.put("theirsParent", commit.getSecondParent());
+                        }
+                    }
                     files.add(fileInfo);
                 }
             }
@@ -326,8 +343,14 @@ public class WebServer implements AutoCloseable {
             response.put("timestamp", commit.getTimestamp());
             response.put("date", formatTimestamp(commit.getTimestamp()));
             response.put("parents", parents);
+            if (isMerge) {
+                response.put("oursParent", commit.getParent());
+                response.put("theirsParent", commit.getSecondParent());
+            }
             response.put("refs", commitRefs);
             response.put("isHead", Objects.equals(fullHash, headCommit));
+            response.put("hasConflicts", conflictFileCount > 0);
+            response.put("conflictCount", conflictFileCount);
             response.put("files", files);
         }
         sendJson(exchange, 200, response);
@@ -361,6 +384,20 @@ public class WebServer implements AutoCloseable {
                 return;
             }
             response = buildBlobPayload(filePath, fullHash, blobHash, bytes);
+            if (commit.getParent() != null && commit.getSecondParent() != null) {
+                Commit p1 = session.getCommit(commit.getParent());
+                Commit p2 = session.getCommit(commit.getSecondParent());
+                String p1Blob = (p1 != null && p1.getNameToHash() != null) ? p1.getNameToHash().get(filePath) : null;
+                String p2Blob = (p2 != null && p2.getNameToHash() != null) ? p2.getNameToHash().get(filePath) : null;
+                boolean parentsDiffer = !Objects.equals(p1Blob, p2Blob);
+                response.put("oursParent", commit.getParent());
+                response.put("oursShortParent", shortHash(commit.getParent()));
+                response.put("theirsParent", commit.getSecondParent());
+                response.put("theirsShortParent", shortHash(commit.getSecondParent()));
+                response.put("oursBlobHash", p1Blob);
+                response.put("theirsBlobHash", p2Blob);
+                response.put("parentsDiffer", parentsDiffer);
+            }
         }
         sendJson(exchange, 200, response);
     }
@@ -404,32 +441,34 @@ public class WebServer implements AutoCloseable {
 
         String decoded = tryDecodeUtf8Text(bytes);
         if (decoded != null) {
+            List<Diff3.Section> parsed = Diff3.parseSections(decoded);
+            List<Map<String, Object>> sectionMaps = new ArrayList<>();
+            int conflictCount = 0;
+            for (Diff3.Section s : parsed) {
+                if (s.isConflict()) {
+                    conflictCount++;
+                }
+                sectionMaps.add(s.toMap());
+            }
             map.put("binary", false);
+            map.put("conflict", conflictCount > 0);
+            map.put("conflictCount", conflictCount);
             map.put("content", decoded);
+            map.put("sections", sectionMaps);
             map.put("hexPreview", null);
         } else {
             map.put("binary", true);
+            map.put("conflict", false);
+            map.put("conflictCount", 0);
             map.put("content", null);
+            map.put("sections", Collections.emptyList());
             map.put("hexPreview", formatHexPreview(bytes, 256));
         }
         return map;
     }
 
     private static String tryDecodeUtf8Text(byte[] bytes) {
-        for (byte b : bytes) {
-            if (b == 0) {
-                return null;
-            }
-        }
-        CharsetDecoder decoder = StandardCharsets.UTF_8.newDecoder()
-                .onMalformedInput(CodingErrorAction.REPORT)
-                .onUnmappableCharacter(CodingErrorAction.REPORT);
-        try {
-            CharBuffer chars = decoder.decode(ByteBuffer.wrap(bytes));
-            return chars.toString();
-        } catch (CharacterCodingException e) {
-            return null;
-        }
+        return Diff3.tryDecodeUtf8Text(bytes);
     }
 
     private static String formatHexPreview(byte[] bytes, int maxBytes) {

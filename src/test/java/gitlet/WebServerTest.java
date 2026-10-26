@@ -183,4 +183,90 @@ public class WebServerTest {
         );
         assertEquals(404, missingFileRes.statusCode());
     }
+
+    @Test
+    public void testConflictCommitAndBlobMetadata(@TempDir Path tempDir) throws Exception {
+        File gitletDir = tempDir.resolve(".gitlet").toFile();
+        gitletDir.mkdirs();
+        Store.useDir(gitletDir);
+        Store.createSchema();
+
+        String c0 = Commit.first_commit();
+        Store.setHead("master");
+        Repository.currHead = c0;
+
+        byte[] baseBytes = "header\nshared\nfooter\n".getBytes(StandardCharsets.UTF_8);
+        String baseHash = Utils.hash(baseBytes);
+        Store.putBlob(baseHash, baseBytes);
+        Store.stageAdd("app.txt", baseHash);
+        String cBase = Commit.commitInCurrBran("base app.txt");
+
+        Commit.branch("other");
+        Store.setHead("other");
+        Repository.currHead = cBase;
+
+        byte[] theirsBytes = "header\ntheirs-change\nfooter\n".getBytes(StandardCharsets.UTF_8);
+        String theirsHash = Utils.hash(theirsBytes);
+        Store.putBlob(theirsHash, theirsBytes);
+        Store.stageAdd("app.txt", theirsHash);
+        String cTheirs = Commit.commitInCurrBran("other modifies app.txt");
+
+        Store.setHead("master");
+        Repository.currHead = cBase;
+
+        byte[] oursBytes = "header-ours\nours-change\nfooter\n".getBytes(StandardCharsets.UTF_8);
+        String oursHash = Utils.hash(oursBytes);
+        Store.putBlob(oursHash, oursBytes);
+        Store.stageAdd("app.txt", oursHash);
+        String cOurs = Commit.commitInCurrBran("master modifies app.txt");
+
+        Diff3.Result diffRes = Diff3.merge(baseBytes, oursBytes, theirsBytes);
+        assertTrue(diffRes.hasConflict());
+        byte[] mergedBytes = diffRes.content();
+        String mergedHash = Utils.hash(mergedBytes);
+        Store.putBlob(mergedHash, mergedBytes);
+
+        TreeMap<String, String> mergedFiles = new TreeMap<>();
+        mergedFiles.put("app.txt", mergedHash);
+        Commit mergeCommit = new Commit("Merged other into master.", mergedFiles, cOurs, cTheirs);
+        mergeCommit.setSelfHash(Utils.hash(Utils.serialize(mergeCommit)));
+        Store.putCommit(mergeCommit);
+        String cMerge = mergeCommit.getSelfHash();
+        Store.setRef("master", cMerge);
+        Repository.currHead = cMerge;
+
+        server = Repository.web(0);
+        int port = server.getPort();
+        HttpClient client = HttpClient.newHttpClient();
+        String baseUrl = "http://127.0.0.1:" + port;
+
+        // Commit detail should report conflict:true on app.txt and hasConflicts:true on the commit
+        HttpResponse<String> detailRes = client.send(
+                HttpRequest.newBuilder(URI.create(baseUrl + "/api/commits/" + cMerge)).GET().build(),
+                HttpResponse.BodyHandlers.ofString(StandardCharsets.UTF_8)
+        );
+        assertEquals(200, detailRes.statusCode());
+        String detailJson = detailRes.body();
+        assertTrue(detailJson.contains("\"hasConflicts\":true"));
+        assertTrue(detailJson.contains("\"conflictCount\":1"));
+        assertTrue(detailJson.contains("\"conflict\":true"));
+        assertTrue(detailJson.contains("\"oursParent\":\"" + cOurs + "\""));
+        assertTrue(detailJson.contains("\"theirsParent\":\"" + cTheirs + "\""));
+
+        // Blob endpoint should return parsed conflict sections and ours/theirs parent info
+        HttpResponse<String> blobRes = client.send(
+                HttpRequest.newBuilder(URI.create(baseUrl + "/api/commits/" + cMerge + "/blob?path=app.txt")).GET().build(),
+                HttpResponse.BodyHandlers.ofString(StandardCharsets.UTF_8)
+        );
+        assertEquals(200, blobRes.statusCode());
+        String blobJson = blobRes.body();
+        assertTrue(blobJson.contains("\"conflict\":true"));
+        assertTrue(blobJson.contains("\"conflictCount\":1"));
+        assertTrue(blobJson.contains("\"type\":\"conflict\""));
+        assertTrue(blobJson.contains("\"ours\":[\"ours-change\"]"));
+        assertTrue(blobJson.contains("\"theirs\":[\"theirs-change\"]"));
+        assertTrue(blobJson.contains("\"oursParent\":\"" + cOurs + "\""));
+        assertTrue(blobJson.contains("\"theirsParent\":\"" + cTheirs + "\""));
+        assertTrue(blobJson.contains("\"parentsDiffer\":true"));
+    }
 }

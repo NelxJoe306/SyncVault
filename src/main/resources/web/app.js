@@ -7,6 +7,8 @@
     selectedCommitHash: null,
     selectedCommitDetail: null,
     selectedFilePath: null,
+    selectedBlob: null,
+    blobViewMode: 'conflict',
     network: null,
     nodesDataSet: null,
     edgesDataSet: null,
@@ -1059,6 +1061,10 @@
       } else if (parents.length === 0) {
         badges.push('<span class="tag">Root commit</span>');
       }
+      if (detail.hasConflicts || Number(detail.conflictCount || 0) > 0) {
+        var cCount = Number(detail.conflictCount || 1);
+        badges.push('<span class="tag conflict-tag">' + cCount + (cCount === 1 ? ' conflict' : ' conflicts') + '</span>');
+      }
       badgesEl.innerHTML = badges.join('');
     }
 
@@ -1086,35 +1092,51 @@
       epochEl.textContent = '(' + Number(detail.timestamp || 0) + ' ms)';
     }
 
+    renderParentsRow(detail, null);
+  }
+
+  function renderParentsRow(detail, activeBlob) {
     var parentsEl = document.getElementById('detail-parents');
-    if (parentsEl) {
-      parentsEl.innerHTML = '';
-      var parentList = detail.parents || [];
-      if (parentList.length === 0) {
-        var noneSpan = document.createElement('span');
-        noneSpan.className = 'meta-dim';
-        noneSpan.textContent = 'None (initial commit)';
-        parentsEl.appendChild(noneSpan);
-      } else {
-        parentList.forEach(function (parentHash, idx) {
-          var chip = document.createElement('button');
-          chip.type = 'button';
-          chip.className = 'parent-chip';
-          chip.setAttribute('data-parent-hash', parentHash);
-          var shortParent = parentHash.slice(0, 7);
-          var parentCommit = state.commitsByHash[parentHash];
-          var parentSummary = parentCommit ? ' · ' + truncateLine(parentCommit.message, 22) : '';
-          var roleLabel = idx === 0 ? 'p0' : 'p1 (merge)';
-          chip.innerHTML =
-            '<span class="p-idx">' + escapeHtml(roleLabel) + '</span>' +
-            '<span>' + escapeHtml(shortParent) + escapeHtml(parentSummary) + '</span>';
-          chip.addEventListener('click', function () {
-            selectCommit(parentHash, { focusGraph: true });
-          });
-          parentsEl.appendChild(chip);
-        });
-      }
+    if (!parentsEl || !detail) {
+      return;
     }
+    parentsEl.innerHTML = '';
+    var parentList = detail.parents || [];
+    if (parentList.length === 0) {
+      var noneSpan = document.createElement('span');
+      noneSpan.className = 'meta-dim';
+      noneSpan.textContent = 'None (initial commit)';
+      parentsEl.appendChild(noneSpan);
+      return;
+    }
+
+    var labelOursTheirs = parentList.length > 1 && (
+      Boolean(detail.hasConflicts) ||
+      Boolean(activeBlob && activeBlob.conflict && activeBlob.parentsDiffer)
+    );
+
+    parentList.forEach(function (parentHash, idx) {
+      var chip = document.createElement('button');
+      chip.type = 'button';
+      chip.className = 'parent-chip' + (labelOursTheirs ? (idx === 0 ? ' parent-ours' : ' parent-theirs') : '');
+      chip.setAttribute('data-parent-hash', parentHash);
+      var shortParent = parentHash.slice(0, 7);
+      var parentCommit = state.commitsByHash[parentHash];
+      var parentSummary = parentCommit ? ' · ' + truncateLine(parentCommit.message, 22) : '';
+      var roleLabel;
+      if (labelOursTheirs) {
+        roleLabel = idx === 0 ? 'p0 · ours (HEAD)' : 'p1 · theirs (merged)';
+      } else {
+        roleLabel = idx === 0 ? 'p0' : 'p1 (merge)';
+      }
+      chip.innerHTML =
+        '<span class="p-idx">' + escapeHtml(roleLabel) + '</span>' +
+        '<span>' + escapeHtml(shortParent) + escapeHtml(parentSummary) + '</span>';
+      chip.addEventListener('click', function () {
+        selectCommit(parentHash, { focusGraph: true });
+      });
+      parentsEl.appendChild(chip);
+    });
   }
 
   function buildHierarchyTree(files) {
@@ -1134,7 +1156,11 @@
         path: fileObj.path,
         blobHash: fileObj.blobHash,
         shortBlobHash: fileObj.shortBlobHash,
-        size: fileObj.size
+        size: fileObj.size,
+        conflict: Boolean(fileObj.conflict),
+        parentsDiffer: Boolean(fileObj.parentsDiffer),
+        oursParent: fileObj.oursParent || null,
+        theirsParent: fileObj.theirsParent || null
       });
     });
     return root;
@@ -1171,15 +1197,28 @@
     node.files.forEach(function (fileObj) {
       var btn = document.createElement('button');
       btn.type = 'button';
-      btn.className = 'tree-file' + (fileObj.path === state.selectedFilePath ? ' active' : '');
+      var classes = 'tree-file';
+      if (fileObj.path === state.selectedFilePath) {
+        classes += ' active';
+      }
+      if (fileObj.conflict) {
+        classes += ' has-conflict';
+      }
+      btn.className = classes;
       btn.setAttribute('role', 'treeitem');
       btn.setAttribute('data-file-path', fileObj.path);
+      btn.setAttribute('data-conflict', fileObj.conflict ? 'true' : 'false');
+
+      var rightBadgeHtml = fileObj.conflict
+        ? '<span class="tree-file-right"><span class="conflict-badge">Conflict</span><span class="tree-file-hash">' + escapeHtml(fileObj.shortBlobHash || '') + '</span></span>'
+        : '<span class="tree-file-hash">' + escapeHtml(fileObj.shortBlobHash || '') + '</span>';
+
       btn.innerHTML =
         '<span class="tree-file-name">' +
-          '<span class="tree-file-icon">≡</span>' +
+          '<span class="tree-file-icon">' + (fileObj.conflict ? '!' : '≡') + '</span>' +
           '<span>' + escapeHtml(fileObj.name) + '</span>' +
         '</span>' +
-        '<span class="tree-file-hash">' + escapeHtml(fileObj.shortBlobHash || '') + '</span>';
+        rightBadgeHtml;
       btn.addEventListener('click', function () {
         selectFile(commitHash, fileObj.path);
       });
@@ -1189,9 +1228,14 @@
 
   function renderFileExplorer(detail) {
     var files = detail.files || [];
+    var conflictFiles = files.filter(function (f) { return Boolean(f.conflict); });
     var summaryEl = document.getElementById('files-summary');
     if (summaryEl) {
-      summaryEl.textContent = files.length + (files.length === 1 ? ' tracked file' : ' tracked files');
+      var summaryText = files.length + (files.length === 1 ? ' tracked file' : ' tracked files');
+      if (conflictFiles.length > 0) {
+        summaryText += ' · ' + conflictFiles.length + (conflictFiles.length === 1 ? ' conflict' : ' conflicts');
+      }
+      summaryEl.textContent = summaryText;
     }
 
     var treeEl = document.getElementById('file-tree');
@@ -1202,11 +1246,14 @@
 
     if (files.length === 0) {
       state.selectedFilePath = null;
+      state.selectedBlob = null;
       treeEl.innerHTML = '<div class="empty-state">No tracked files in this commit.</div>';
       var pathEl = document.getElementById('blob-path');
       var chipEl = document.getElementById('blob-hash-chip');
       var metaEl = document.getElementById('blob-header-meta');
       var viewerEl = document.getElementById('blob-viewer');
+      var pillEl = document.getElementById('blob-conflict-pill');
+      var switchEl = document.getElementById('conflict-view-switch');
       if (pathEl) {
         pathEl.textContent = 'Empty tree';
       }
@@ -1215,6 +1262,12 @@
       }
       if (metaEl) {
         metaEl.textContent = '';
+      }
+      if (pillEl) {
+        pillEl.hidden = true;
+      }
+      if (switchEl) {
+        switchEl.hidden = true;
       }
       if (viewerEl) {
         viewerEl.innerHTML = '<div class="empty-state">This commit has an empty file snapshot (0 tracked files).</div>';
@@ -1232,7 +1285,7 @@
       }
     }
     if (!targetPath) {
-      targetPath = files[0].path;
+      targetPath = conflictFiles.length > 0 ? conflictFiles[0].path : files[0].path;
     }
     state.selectedFilePath = targetPath;
 
@@ -1261,6 +1314,10 @@
         return res.json();
       })
       .then(function (blob) {
+        state.selectedBlob = blob;
+        if (state.selectedCommitDetail) {
+          renderParentsRow(state.selectedCommitDetail, blob);
+        }
         renderBlobPreview(blob);
       })
       .catch(function (err) {
@@ -1282,11 +1339,81 @@
     return (n / (1024 * 1024)).toFixed(2) + ' MB';
   }
 
+  function parseClientConflictSections(content) {
+    var rawLines = String(content || '').split(/\r?\n/);
+    if (rawLines.length > 1 && rawLines[rawLines.length - 1] === '' && String(content).endsWith('\n')) {
+      rawLines.pop();
+    }
+    var sections = [];
+    var contextBuf = [];
+    var contextStart = 1;
+    var i = 0;
+    var n = rawLines.length;
+
+    function isStart(l) {
+      var t = l.replace(/\s+$/, '');
+      return t === '<<<<<<< HEAD' || t.indexOf('<<<<<<< ') === 0;
+    }
+    function isSep(l) {
+      return l.replace(/\s+$/, '') === '=======';
+    }
+    function isEnd(l) {
+      var t = l.replace(/\s+$/, '');
+      return t === '>>>>>>>' || t.indexOf('>>>>>>> ') === 0;
+    }
+
+    while (i < n) {
+      if (isStart(rawLines[i])) {
+        var sepIdx = -1;
+        var endIdx = -1;
+        for (var j = i + 1; j < n; j++) {
+          if (sepIdx < 0) {
+            if (isStart(rawLines[j])) {
+              break;
+            }
+            if (isSep(rawLines[j])) {
+              sepIdx = j;
+            }
+          } else if (isEnd(rawLines[j])) {
+            endIdx = j;
+            break;
+          }
+        }
+        if (sepIdx > i && endIdx > sepIdx) {
+          if (contextBuf.length > 0) {
+            sections.push({ type: 'context', startLine: contextStart, lines: contextBuf.slice() });
+            contextBuf = [];
+          }
+          sections.push({
+            type: 'conflict',
+            startLine: i + 1,
+            ours: rawLines.slice(i + 1, sepIdx),
+            theirs: rawLines.slice(sepIdx + 1, endIdx)
+          });
+          i = endIdx + 1;
+          contextStart = i + 1;
+          continue;
+        }
+      }
+      if (contextBuf.length === 0) {
+        contextStart = i + 1;
+      }
+      contextBuf.push(rawLines[i]);
+      i++;
+    }
+    if (contextBuf.length > 0) {
+      sections.push({ type: 'context', startLine: contextStart, lines: contextBuf.slice() });
+    }
+    return sections;
+  }
+
   function renderBlobPreview(blob) {
     var pathEl = document.getElementById('blob-path');
     var chipEl = document.getElementById('blob-hash-chip');
     var metaEl = document.getElementById('blob-header-meta');
     var viewerEl = document.getElementById('blob-viewer');
+    var pillEl = document.getElementById('blob-conflict-pill');
+    var switchEl = document.getElementById('conflict-view-switch');
 
     if (pathEl) {
       pathEl.textContent = blob.path || '';
@@ -1300,6 +1427,12 @@
     }
 
     if (blob.binary) {
+      if (pillEl) {
+        pillEl.hidden = true;
+      }
+      if (switchEl) {
+        switchEl.hidden = true;
+      }
       if (metaEl) {
         metaEl.textContent = 'binary · ' + formatBytes(blob.size);
       }
@@ -1313,6 +1446,12 @@
 
     var content = typeof blob.content === 'string' ? blob.content : '';
     if (content.length === 0) {
+      if (pillEl) {
+        pillEl.hidden = true;
+      }
+      if (switchEl) {
+        switchEl.hidden = true;
+      }
       if (metaEl) {
         metaEl.textContent = '0 lines · 0 B';
       }
@@ -1324,15 +1463,149 @@
     if (rawLines.length > 1 && rawLines[rawLines.length - 1] === '' && content.endsWith('\n')) {
       rawLines.pop();
     }
+
+    var sections = Array.isArray(blob.sections) && blob.sections.length > 0
+      ? blob.sections
+      : parseClientConflictSections(content);
+    var conflictHunks = sections.filter(function (s) { return s && s.type === 'conflict'; });
+    var hasConflict = Boolean(blob.conflict) || conflictHunks.length > 0;
+
+    if (pillEl) {
+      pillEl.hidden = !hasConflict;
+      if (hasConflict) {
+        pillEl.textContent = conflictHunks.length === 1 ? '1 conflict' : (conflictHunks.length + ' conflicts');
+      }
+    }
+    if (switchEl) {
+      switchEl.hidden = !hasConflict;
+      var btnConflict = document.getElementById('btn-mode-conflict');
+      var btnRaw = document.getElementById('btn-mode-raw');
+      if (btnConflict) {
+        btnConflict.classList.toggle('active', state.blobViewMode !== 'raw');
+      }
+      if (btnRaw) {
+        btnRaw.classList.toggle('active', state.blobViewMode === 'raw');
+      }
+    }
+
     if (metaEl) {
-      metaEl.textContent = rawLines.length + (rawLines.length === 1 ? ' line' : ' lines') + ' · ' + formatBytes(blob.size);
+      var metaParts = [
+        rawLines.length + (rawLines.length === 1 ? ' line' : ' lines'),
+        formatBytes(blob.size)
+      ];
+      if (hasConflict) {
+        metaParts.unshift(conflictHunks.length + (conflictHunks.length === 1 ? ' conflict hunk' : ' conflict hunks'));
+      }
+      metaEl.textContent = metaParts.join(' · ');
+    }
+
+    if (hasConflict && state.blobViewMode !== 'raw') {
+      renderConflictSplitView(viewerEl, blob, sections, conflictHunks.length);
+      return;
     }
 
     var rowsHtml = rawLines.map(function (line, idx) {
-      return '<tr><td class="ln">' + (idx + 1) + '</td><td class="lc">' + escapeHtml(line) + '</td></tr>';
+      var trimmed = line.replace(/\s+$/, '');
+      var rowClass = '';
+      if (trimmed === '<<<<<<< HEAD' || trimmed.indexOf('<<<<<<< ') === 0) {
+        rowClass = ' class="marker-row marker-ours"';
+      } else if (trimmed === '=======') {
+        rowClass = ' class="marker-row marker-sep"';
+      } else if (trimmed === '>>>>>>>' || trimmed.indexOf('>>>>>>> ') === 0) {
+        rowClass = ' class="marker-row marker-theirs"';
+      }
+      return '<tr' + rowClass + '><td class="ln">' + (idx + 1) + '</td><td class="lc">' + escapeHtml(line) + '</td></tr>';
     }).join('');
 
     viewerEl.innerHTML = '<table class="code-table"><tbody>' + rowsHtml + '</tbody></table>';
+  }
+
+  function renderConflictSplitView(viewerEl, blob, sections, hunkCount) {
+    var oursTitle = 'Ours · HEAD';
+    var theirsTitle = 'Theirs · Incoming';
+    if (blob.oursShortParent) {
+      oursTitle += ' (' + blob.oursShortParent + ')';
+    }
+    if (blob.theirsShortParent) {
+      theirsTitle += ' (' + blob.theirsShortParent + ')';
+    }
+
+    var parts = [];
+    parts.push(
+      '<div class="conflict-view">' +
+        '<div class="conflict-banner">' +
+          '<div class="conflict-banner-left">' +
+            '<span class="conflict-badge">Merge Conflict</span>' +
+            '<span class="conflict-banner-text">' +
+              hunkCount + (hunkCount === 1 ? ' conflicting hunk detected' : ' conflicting hunks detected') +
+            '</span>' +
+          '</div>' +
+          '<div class="conflict-banner-sides">' +
+            '<span class="side-pill side-ours">' + escapeHtml(oursTitle) + '</span>' +
+            '<span class="side-vs">vs</span>' +
+            '<span class="side-pill side-theirs">' + escapeHtml(theirsTitle) + '</span>' +
+          '</div>' +
+        '</div>'
+    );
+
+    var hunkIndex = 0;
+    sections.forEach(function (sec) {
+      if (!sec) {
+        return;
+      }
+      if (sec.type === 'conflict') {
+        hunkIndex++;
+        var oursLines = Array.isArray(sec.ours) ? sec.ours : [];
+        var theirsLines = Array.isArray(sec.theirs) ? sec.theirs : [];
+
+        var oursBody = oursLines.length === 0
+          ? '<div class="conflict-empty-side">(empty / deleted on ours)</div>'
+          : '<ol class="conflict-lines">' + oursLines.map(function (l) {
+              return '<li><code>' + escapeHtml(l) + '</code></li>';
+            }).join('') + '</ol>';
+
+        var theirsBody = theirsLines.length === 0
+          ? '<div class="conflict-empty-side">(empty / deleted on theirs)</div>'
+          : '<ol class="conflict-lines">' + theirsLines.map(function (l) {
+              return '<li><code>' + escapeHtml(l) + '</code></li>';
+            }).join('') + '</ol>';
+
+        parts.push(
+          '<div class="conflict-hunk">' +
+            '<div class="conflict-hunk-head">' +
+              '<span>Conflict Hunk #' + hunkIndex + ' (line ' + Number(sec.startLine || 1) + ')</span>' +
+              '<span>' + oursLines.length + ' ours / ' + theirsLines.length + ' theirs</span>' +
+            '</div>' +
+            '<div class="conflict-columns">' +
+              '<div class="conflict-pane pane-ours">' +
+                '<div class="conflict-pane-title">' + escapeHtml(oursTitle) + '</div>' +
+                oursBody +
+              '</div>' +
+              '<div class="conflict-pane pane-theirs">' +
+                '<div class="conflict-pane-title">' + escapeHtml(theirsTitle) + '</div>' +
+                theirsBody +
+              '</div>' +
+            '</div>' +
+          '</div>'
+        );
+      } else {
+        var ctxLines = Array.isArray(sec.lines) ? sec.lines : [];
+        if (ctxLines.length > 0) {
+          var startLn = Number(sec.startLine || 1);
+          var rows = ctxLines.map(function (line, i) {
+            return '<tr><td class="ln">' + (startLn + i) + '</td><td class="lc">' + escapeHtml(line) + '</td></tr>';
+          }).join('');
+          parts.push(
+            '<div class="conflict-context">' +
+              '<table class="code-table"><tbody>' + rows + '</tbody></table>' +
+            '</div>'
+          );
+        }
+      }
+    });
+
+    parts.push('</div>');
+    viewerEl.innerHTML = parts.join('');
   }
 
   function escapeHtml(str) {
@@ -1466,6 +1739,25 @@
               btnCopy.textContent = 'Copy full hash';
             }, 1200);
           }).catch(function () {});
+        }
+      });
+    }
+
+    var btnModeConflict = document.getElementById('btn-mode-conflict');
+    var btnModeRaw = document.getElementById('btn-mode-raw');
+    if (btnModeConflict) {
+      btnModeConflict.addEventListener('click', function () {
+        state.blobViewMode = 'conflict';
+        if (state.selectedBlob) {
+          renderBlobPreview(state.selectedBlob);
+        }
+      });
+    }
+    if (btnModeRaw) {
+      btnModeRaw.addEventListener('click', function () {
+        state.blobViewMode = 'raw';
+        if (state.selectedBlob) {
+          renderBlobPreview(state.selectedBlob);
         }
       });
     }

@@ -695,16 +695,20 @@ public class Repository {
                     if (Objects.equals(cHash, gHash)) {
                         // Rule 3: modified same way or both deleted
                     } else {
-                        // Rule 8: Conflict
-                        hasConflict = true;
+                        // Rule 8: 3-way line merge / conflict
+                        byte[] sContent = Store.getBlob(sHash);
                         byte[] cContent = (cHash != null) ? Store.getBlob(cHash) : new byte[0];
                         byte[] gContent = (gHash != null) ? Store.getBlob(gHash) : new byte[0];
-                        byte[] conflictContent = buildConflict(cContent, gContent);
-                        writeContents(join(CWD, file), conflictContent);
+                        Diff3.Result mergeResult = Diff3.merge(sContent, cContent, gContent);
+                        if (mergeResult.hasConflict()) {
+                            hasConflict = true;
+                        }
+                        byte[] mergedContent = mergeResult.content();
+                        writeContents(join(CWD, file), mergedContent);
                         Blob.saveToStage(file);
-                        String conflictBlobHash = Utils.hash(conflictContent);
-                        Store.putBlob(conflictBlobHash, conflictContent);
-                        newCommitMap.put(file, conflictBlobHash);
+                        String mergedBlobHash = Utils.hash(mergedContent);
+                        Store.putBlob(mergedBlobHash, mergedContent);
+                        newCommitMap.put(file, mergedBlobHash);
                     }
                 }
             } else {
@@ -721,16 +725,19 @@ public class Repository {
                     if (Objects.equals(cHash, gHash)) {
                         // Rule 3: both added same way
                     } else {
-                        // Rule 8: Conflict
-                        hasConflict = true;
+                        // Rule 8: 3-way line merge / conflict (empty base)
                         byte[] cContent = Store.getBlob(cHash);
                         byte[] gContent = Store.getBlob(gHash);
-                        byte[] conflictContent = buildConflict(cContent, gContent);
-                        writeContents(join(CWD, file), conflictContent);
+                        Diff3.Result mergeResult = Diff3.merge(new byte[0], cContent, gContent);
+                        if (mergeResult.hasConflict()) {
+                            hasConflict = true;
+                        }
+                        byte[] mergedContent = mergeResult.content();
+                        writeContents(join(CWD, file), mergedContent);
                         Blob.saveToStage(file);
-                        String conflictBlobHash = Utils.hash(conflictContent);
-                        Store.putBlob(conflictBlobHash, conflictContent);
-                        newCommitMap.put(file, conflictBlobHash);
+                        String mergedBlobHash = Utils.hash(mergedContent);
+                        Store.putBlob(mergedBlobHash, mergedContent);
+                        newCommitMap.put(file, mergedBlobHash);
                     }
                 }
             }
@@ -1027,25 +1034,6 @@ public class Repository {
     /** Branch names, including remote-tracking names stored in ref table. */
     private static List<String> allBranchNames() {
         return Store.allRefNames();
-    }
-
-    /** Spec conflict text. File bytes are appended raw, so a missing side is empty. */
-    private static byte[] buildConflict(byte[] current, byte[] given) {
-        byte[] head = "<<<<<<< HEAD\n".getBytes(java.nio.charset.StandardCharsets.UTF_8);
-        byte[] mid = "=======\n".getBytes(java.nio.charset.StandardCharsets.UTF_8);
-        byte[] end = ">>>>>>>\n".getBytes(java.nio.charset.StandardCharsets.UTF_8);
-        byte[] out = new byte[head.length + current.length + mid.length + given.length + end.length];
-        int i = 0;
-        System.arraycopy(head, 0, out, i, head.length);
-        i += head.length;
-        System.arraycopy(current, 0, out, i, current.length);
-        i += current.length;
-        System.arraycopy(mid, 0, out, i, mid.length);
-        i += mid.length;
-        System.arraycopy(given, 0, out, i, given.length);
-        i += given.length;
-        System.arraycopy(end, 0, out, i, end.length);
-        return out;
     }
 }
 

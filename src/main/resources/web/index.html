@@ -132,8 +132,17 @@
 
           <div class="blob-preview-pane" aria-label="Blob preview">
             <div class="pane-bar blob-bar">
-              <code class="blob-path" id="blob-path">No file selected</code>
-              <span class="blob-hash-chip" id="blob-hash-chip"></span>
+              <div class="blob-bar-left">
+                <code class="blob-path" id="blob-path">No file selected</code>
+                <span class="blob-conflict-pill" id="blob-conflict-pill" hidden>Conflict</span>
+              </div>
+              <div class="blob-bar-right">
+                <div class="conflict-view-switch" id="conflict-view-switch" hidden>
+                  <button class="pill-btn view-mode-btn active" id="btn-mode-conflict" type="button" data-mode="conflict">Ours | Theirs</button>
+                  <button class="pill-btn view-mode-btn" id="btn-mode-raw" type="button" data-mode="raw">Raw</button>
+                </div>
+                <span class="blob-hash-chip" id="blob-hash-chip"></span>
+              </div>
             </div>
             <div class="blob-viewer" id="blob-viewer">
               <div class="empty-state">Select a tracked file to preview its blob contents.</div>

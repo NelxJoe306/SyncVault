@@ -62,8 +62,10 @@ merge 的八条规则还在 `Repository.merge` 里：当前和给定相同就保
 
 远程支持两种地址形式：
 1. **本地路径远程（Path Remote）**：形如 `../D1/.gitlet` 的本地文件系统目录，直接通过 `Store.open(remoteGitlet)` 打开远端 SQLite 会话并在单个事务内拷贝缺失的 Commit 与 Blob。
-2. **Netty TCP 网络远程（Network Remote）**：形如 `host:port` 或 `netty://host:port`（由 `Repository.isNetworkRemote` 识别）。远端通过 `serve [port]`（默认端口 `9418`）启动 `NettyServer`，客户端 `push` / `fetch` 通过 `NettyClient` 建立 TCP 连接。
+2. **Netty TCP / TLS 网络远程（Network Remote）**：形如 `host:port`、`netty://host:port`（明文 TCP）或 `nettys://host:port`（TLS 加密，由 `Repository.isNetworkRemote` 识别）。远端通过 `serve [port]`（默认端口 `9418`）启动 `NettyServer`，客户端 `push` / `fetch` / `pull` 通过 `NettyClient` 建立连接。
    - **传输帧与协议（`SyncMessage`）**：基于 Netty `LengthFieldBasedFrameDecoder` / `LengthFieldPrepender`（4 字节长度前缀）与 Java 序列化消息传输。
+   - **共享令牌鉴权（Token Auth）**：通过 `--token`、环境变量 `GITLET_SYNC_TOKEN` 或仓库文件 `.gitlet/sync-token`（优先级：`--token` > `GITLET_SYNC_TOKEN` > `.gitlet/sync-token`）配置令牌。服务端配置令牌后，要求客户端 `HELLO` 携带相同令牌（使用 `MessageDigest.isEqual` 常量时间比对），缺失或错误时返回 `ERROR("Authentication failed: invalid or missing sync token.")` 并拒绝后续 `PUSH_*` / `FETCH_*` 操作；未配置令牌时默认免密以保持向后兼容。本地目录远程不受令牌影响。
+   - **可选 TLS 加密**：服务端提供 `--tls-cert` + `--tls-key`（或 `GITLET_TLS_CERT` + `GITLET_TLS_KEY`）时在管线最前端挂载 `SslHandler`。客户端使用 `nettys://host:port` 或显式 TLS 参数时启用 `SslContext`，支持自定义受信任证书（`--tls-ca` / `GITLET_TLS_CA` / `.gitlet/tls-ca.pem`）或显式 `--tls-insecure`（`GITLET_TLS_INSECURE=true`）。
    - **Fetch 流程**：`HELLO` / `HELLO_OK` 握手后，客户端发送 `FETCH_REQ(branch)`；服务端返回 `FETCH_TIP(tip)`（若分支不存在则返回 `ERROR`，客户端打印 `That remote does not have that branch.`）；客户端发送本地已有的提交哈希集合 `FETCH_HAVE`，服务端通过 BFS 计算缺失的 Commit 序列化字节及关联 Blob 并以 `FETCH_OBJECTS` 返回；客户端在单一 SQLite 事务中写入对象并更新 `ref/<remote>/<branch>`，最后回复 `ACK`。
    - **Push 流程**：握手后客户端发送 `PUSH_REQ(branch, localTip)`；服务端返回远端当前分支头与已有提交集合 `PUSH_TIP`；客户端复用 BFS 校验远端分支头是否为本地分支头的祖先（否则打印 `Please pull down remote changes before pushing.`），收集缺失的 Commit 与 Blob 通过 `PUSH_OBJECTS` 发送；服务端在单一 SQLite 事务中写入对象并更新分支引用，回复 `ACK`。
 

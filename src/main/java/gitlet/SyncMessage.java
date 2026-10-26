@@ -39,9 +39,15 @@ public class SyncMessage implements Serializable {
     public final List<byte[]> commits;
     public final Map<String, byte[]> blobs;
     public final String error;
+    public final String token;
 
     private SyncMessage(Type type, String branch, String tipHash, Set<String> hashes,
                         List<byte[]> commits, Map<String, byte[]> blobs, String error) {
+        this(type, branch, tipHash, hashes, commits, blobs, error, null);
+    }
+
+    private SyncMessage(Type type, String branch, String tipHash, Set<String> hashes,
+                        List<byte[]> commits, Map<String, byte[]> blobs, String error, String token) {
         this.type = type;
         this.branch = branch;
         this.tipHash = tipHash;
@@ -49,10 +55,15 @@ public class SyncMessage implements Serializable {
         this.commits = commits;
         this.blobs = blobs;
         this.error = error;
+        this.token = token;
     }
 
     public static SyncMessage hello() {
-        return new SyncMessage(Type.HELLO, null, null, null, null, null, null);
+        return hello(null);
+    }
+
+    public static SyncMessage hello(String token) {
+        return new SyncMessage(Type.HELLO, null, null, null, null, null, null, token);
     }
 
     public static SyncMessage helloOk() {

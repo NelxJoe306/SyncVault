@@ -7,7 +7,13 @@ import io.netty.channel.socket.SocketChannel;
 import io.netty.channel.socket.nio.NioSocketChannel;
 import io.netty.handler.codec.LengthFieldBasedFrameDecoder;
 import io.netty.handler.codec.LengthFieldPrepender;
+import io.netty.handler.ssl.SslContext;
+import io.netty.handler.ssl.SslContextBuilder;
+import io.netty.handler.ssl.SslHandler;
+import io.netty.handler.ssl.util.InsecureTrustManagerFactory;
 
+import javax.net.ssl.SSLException;
+import java.io.File;
 import java.util.*;
 import java.util.concurrent.BlockingQueue;
 import java.util.concurrent.LinkedBlockingQueue;
@@ -21,33 +27,33 @@ public class NettyClient {
     private static final int TIMEOUT_SECONDS = 30;
 
     public static void fetch(String remoteName, String remotePath, String branchName) {
+        fetch(remoteName, remotePath, branchName, null, null, false, false);
+    }
+
+    public static void fetch(String remoteName, String remotePath, String branchName,
+                             String explicitToken, File explicitTlsCa, boolean explicitTlsInsecure) {
+        fetch(remoteName, remotePath, branchName, explicitToken, explicitTlsCa, explicitTlsInsecure, false);
+    }
+
+    public static void fetch(String remoteName, String remotePath, String branchName,
+                             String explicitToken, File explicitTlsCa,
+                             boolean explicitTlsInsecure, boolean explicitTls) {
         HostPort hp = parseHostPort(remotePath);
         if (hp == null) {
-            System.out.println("Could not connect to remote.");
-            System.exit(0);
-            return;
+            throw new GitletException("Could not connect to remote.");
         }
+
+        File gitletDir = Repository.gitletDirForSession(Store.getDefault());
+        String token = Repository.resolveSyncToken(explicitToken, gitletDir);
+        SslContext sslContext = resolveClientSslContext(
+                hp, explicitTlsCa, explicitTlsInsecure, explicitTls, gitletDir);
 
         EventLoopGroup group = new NioEventLoopGroup(1);
         Channel ch = null;
         String exitMessage = null;
         try {
             ClientHandler handler = new ClientHandler();
-            Bootstrap b = new Bootstrap();
-            b.group(group)
-                    .channel(NioSocketChannel.class)
-                    .option(ChannelOption.CONNECT_TIMEOUT_MILLIS, 5000)
-                    .handler(new ChannelInitializer<SocketChannel>() {
-                        @Override
-                        protected void initChannel(SocketChannel socketChannel) {
-                            socketChannel.pipeline().addLast(
-                                    new LengthFieldBasedFrameDecoder(NettyServer.MAX_FRAME_BYTES, 0, 4, 0, 4),
-                                    new LengthFieldPrepender(4),
-                                    new SyncMessage.Codec(),
-                                    handler
-                            );
-                        }
-                    });
+            Bootstrap b = buildBootstrap(group, hp, sslContext, handler);
 
             try {
                 ch = b.connect(hp.host, hp.port).sync().channel();
@@ -56,9 +62,16 @@ public class NettyClient {
                 return;
             }
 
-            SyncMessage helloResp = handler.request(ch, SyncMessage.hello());
-            if (helloResp == null || helloResp.type != SyncMessage.Type.HELLO_OK) {
-                exitMessage = "Network error.";
+            String hsError = awaitTlsHandshake(ch);
+            if (hsError != null) {
+                exitMessage = hsError;
+                return;
+            }
+
+            SyncMessage helloResp = handler.request(ch, SyncMessage.hello(token));
+            String authError = checkHelloResponse(helloResp, sslContext != null);
+            if (authError != null) {
+                exitMessage = authError;
                 return;
             }
 
@@ -108,42 +121,40 @@ public class NettyClient {
                 ch.close().syncUninterruptibly();
             }
             group.shutdownGracefully(0, 1, TimeUnit.SECONDS).syncUninterruptibly();
-        }
-
-        if (exitMessage != null) {
-            System.out.println(exitMessage);
-            System.exit(0);
+            if (exitMessage != null) {
+                throw new GitletException(exitMessage);
+            }
         }
     }
 
     public static void push(String remotePath, String branchName, String localHead) {
+        push(remotePath, branchName, localHead, null, null, false, false);
+    }
+
+    public static void push(String remotePath, String branchName, String localHead,
+                            String explicitToken, File explicitTlsCa, boolean explicitTlsInsecure) {
+        push(remotePath, branchName, localHead, explicitToken, explicitTlsCa, explicitTlsInsecure, false);
+    }
+
+    public static void push(String remotePath, String branchName, String localHead,
+                            String explicitToken, File explicitTlsCa,
+                            boolean explicitTlsInsecure, boolean explicitTls) {
         HostPort hp = parseHostPort(remotePath);
         if (hp == null) {
-            System.out.println("Could not connect to remote.");
-            System.exit(0);
-            return;
+            throw new GitletException("Could not connect to remote.");
         }
+
+        File gitletDir = Repository.gitletDirForSession(Store.getDefault());
+        String token = Repository.resolveSyncToken(explicitToken, gitletDir);
+        SslContext sslContext = resolveClientSslContext(
+                hp, explicitTlsCa, explicitTlsInsecure, explicitTls, gitletDir);
 
         EventLoopGroup group = new NioEventLoopGroup(1);
         Channel ch = null;
         String exitMessage = null;
         try {
             ClientHandler handler = new ClientHandler();
-            Bootstrap b = new Bootstrap();
-            b.group(group)
-                    .channel(NioSocketChannel.class)
-                    .option(ChannelOption.CONNECT_TIMEOUT_MILLIS, 5000)
-                    .handler(new ChannelInitializer<SocketChannel>() {
-                        @Override
-                        protected void initChannel(SocketChannel socketChannel) {
-                            socketChannel.pipeline().addLast(
-                                    new LengthFieldBasedFrameDecoder(NettyServer.MAX_FRAME_BYTES, 0, 4, 0, 4),
-                                    new LengthFieldPrepender(4),
-                                    new SyncMessage.Codec(),
-                                    handler
-                            );
-                        }
-                    });
+            Bootstrap b = buildBootstrap(group, hp, sslContext, handler);
 
             try {
                 ch = b.connect(hp.host, hp.port).sync().channel();
@@ -152,9 +163,16 @@ public class NettyClient {
                 return;
             }
 
-            SyncMessage helloResp = handler.request(ch, SyncMessage.hello());
-            if (helloResp == null || helloResp.type != SyncMessage.Type.HELLO_OK) {
-                exitMessage = "Network error.";
+            String hsError = awaitTlsHandshake(ch);
+            if (hsError != null) {
+                exitMessage = hsError;
+                return;
+            }
+
+            SyncMessage helloResp = handler.request(ch, SyncMessage.hello(token));
+            String authError = checkHelloResponse(helloResp, sslContext != null);
+            if (authError != null) {
+                exitMessage = authError;
                 return;
             }
 
@@ -218,11 +236,113 @@ public class NettyClient {
                 ch.close().syncUninterruptibly();
             }
             group.shutdownGracefully(0, 1, TimeUnit.SECONDS).syncUninterruptibly();
+            if (exitMessage != null) {
+                throw new GitletException(exitMessage);
+            }
         }
+    }
 
-        if (exitMessage != null) {
-            System.out.println(exitMessage);
-            System.exit(0);
+    private static Bootstrap buildBootstrap(EventLoopGroup group, HostPort hp,
+                                            SslContext sslContext, ClientHandler handler) {
+        Bootstrap b = new Bootstrap();
+        b.group(group)
+                .channel(NioSocketChannel.class)
+                .option(ChannelOption.CONNECT_TIMEOUT_MILLIS, 5000)
+                .handler(new ChannelInitializer<SocketChannel>() {
+                    @Override
+                    protected void initChannel(SocketChannel socketChannel) {
+                        ChannelPipeline pipeline = socketChannel.pipeline();
+                        if (sslContext != null) {
+                            pipeline.addLast(sslContext.newHandler(socketChannel.alloc(), hp.host, hp.port));
+                        }
+                        pipeline.addLast(
+                                new LengthFieldBasedFrameDecoder(NettyServer.MAX_FRAME_BYTES, 0, 4, 0, 4),
+                                new LengthFieldPrepender(4),
+                                new SyncMessage.Codec(),
+                                handler
+                        );
+                    }
+                });
+        return b;
+    }
+
+    private static String awaitTlsHandshake(Channel ch) {
+        SslHandler sslHandler = ch.pipeline().get(SslHandler.class);
+        if (sslHandler == null) {
+            return null;
+        }
+        try {
+            if (!sslHandler.handshakeFuture().await(TIMEOUT_SECONDS, TimeUnit.SECONDS)) {
+                return "TLS handshake failed: timed out.";
+            }
+            if (!sslHandler.handshakeFuture().isSuccess()) {
+                Throwable cause = sslHandler.handshakeFuture().cause();
+                return "TLS handshake failed: " + rootMessage(cause);
+            }
+            return null;
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            return "TLS handshake failed: interrupted.";
+        }
+    }
+
+    private static String checkHelloResponse(SyncMessage helloResp, boolean tlsActive) {
+        if (helloResp == null) {
+            return "Network error.";
+        }
+        if (helloResp.type == SyncMessage.Type.HELLO_OK) {
+            return null;
+        }
+        if (helloResp.type == SyncMessage.Type.ERROR && helloResp.error != null
+                && !helloResp.error.equals("Connection closed.")) {
+            return helloResp.error;
+        }
+        if (tlsActive) {
+            return "TLS handshake failed: connection closed by remote.";
+        }
+        return "Network error.";
+    }
+
+    static SslContext resolveClientSslContext(HostPort hp, File explicitTlsCa,
+                                              boolean explicitTlsInsecure, boolean explicitTls,
+                                              File gitletDir) {
+        File caFile = (explicitTlsCa != null) ? explicitTlsCa : Repository.envFile(Repository.ENV_TLS_CA);
+        boolean insecure = explicitTlsInsecure || Repository.envBool(Repository.ENV_TLS_INSECURE);
+        boolean forceTls = explicitTls || Repository.envBool(Repository.ENV_TLS);
+        boolean useTls = hp.tls || forceTls || insecure || (caFile != null);
+
+        if (useTls && caFile == null && !insecure && gitletDir != null) {
+            File localCa = new File(gitletDir, Repository.TLS_CA_FILE);
+            if (localCa.exists() && localCa.isFile()) {
+                caFile = localCa;
+            }
+        }
+        return buildClientSslContext(useTls, caFile, insecure);
+    }
+
+    static SslContext buildClientSslContext(boolean useTls, File caFile, boolean insecure) {
+        if (!useTls) {
+            return null;
+        }
+        if (caFile != null && (!caFile.exists() || !caFile.isFile())) {
+            throw new GitletException("TLS CA certificate file not found: " + caFile.getPath());
+        }
+        try {
+            SslContextBuilder builder = SslContextBuilder.forClient();
+            if (caFile != null) {
+                builder.trustManager(caFile);
+            } else if (insecure) {
+                builder.trustManager(InsecureTrustManagerFactory.INSTANCE);
+            }
+            // Netty leaves this null, which disables hostname checks, so any
+            // certificate the trust store accepts would authenticate every host.
+            // Skip identification only when the insecure trust manager is used.
+            if (caFile != null || !insecure) {
+                builder.endpointIdentificationAlgorithm("HTTPS");
+            }
+            return builder.build();
+        } catch (Exception e) {
+            throw new GitletException("Failed to initialize client TLS context: " + e.getMessage());
         }
     }
 
@@ -231,7 +351,11 @@ public class NettyClient {
             return null;
         }
         String addr = remotePath;
-        if (addr.startsWith("netty://")) {
+        boolean tls = false;
+        if (addr.startsWith("nettys://")) {
+            addr = addr.substring("nettys://".length());
+            tls = true;
+        } else if (addr.startsWith("netty://")) {
             addr = addr.substring("netty://".length());
         }
         if (addr.endsWith("/")) {
@@ -245,12 +369,15 @@ public class NettyClient {
         if (host.startsWith("[") && host.endsWith("]")) {
             host = host.substring(1, host.length() - 1);
         }
+        if (host.isEmpty() || host.contains("/") || host.contains("\\")) {
+            return null;
+        }
         try {
             int port = Integer.parseInt(addr.substring(colonIdx + 1));
             if (port < 1 || port > 65535) {
                 return null;
             }
-            return new HostPort(host, port);
+            return new HostPort(host, port, tls);
         } catch (NumberFormatException e) {
             return null;
         }
@@ -259,18 +386,49 @@ public class NettyClient {
     static class HostPort {
         final String host;
         final int port;
+        final boolean tls;
 
         HostPort(String host, int port) {
+            this(host, port, false);
+        }
+
+        HostPort(String host, int port, boolean tls) {
             this.host = host;
             this.port = port;
+            this.tls = tls;
         }
+    }
+
+    private static boolean isSslFailure(Throwable t) {
+        Throwable curr = t;
+        while (curr != null) {
+            if (curr instanceof SSLException) {
+                return true;
+            }
+            curr = curr.getCause();
+        }
+        return false;
+    }
+
+    private static String rootMessage(Throwable t) {
+        if (t == null) {
+            return "handshake rejected";
+        }
+        Throwable curr = t;
+        while (curr.getCause() != null) {
+            curr = curr.getCause();
+        }
+        return (curr.getMessage() != null) ? curr.getMessage() : curr.getClass().getSimpleName();
     }
 
     private static class ClientHandler extends SimpleChannelInboundHandler<SyncMessage> {
         private final BlockingQueue<SyncMessage> inbox = new LinkedBlockingQueue<>();
 
         SyncMessage request(Channel ch, SyncMessage req) throws InterruptedException {
-            ch.writeAndFlush(req).sync();
+            ChannelFuture f = ch.writeAndFlush(req).await();
+            if (!f.isSuccess() && isSslFailure(f.cause())) {
+                return SyncMessage.error("TLS handshake failed: " + rootMessage(f.cause()));
+            }
             return inbox.poll(TIMEOUT_SECONDS, TimeUnit.SECONDS);
         }
 
@@ -286,7 +444,11 @@ public class NettyClient {
 
         @Override
         public void exceptionCaught(ChannelHandlerContext ctx, Throwable cause) {
-            inbox.offer(SyncMessage.error(cause.getMessage()));
+            if (isSslFailure(cause)) {
+                inbox.offer(SyncMessage.error("TLS handshake failed: " + rootMessage(cause)));
+            } else {
+                inbox.offer(SyncMessage.error(cause.getMessage()));
+            }
             ctx.close();
         }
     }

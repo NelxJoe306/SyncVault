@@ -285,3 +285,10 @@ files          重复 fileCount 次：文件名、blob id（都是非空字符�
 
 - **可达性分析（Mark）**：以 `ref` 表中的所有分支与远程跟踪引用、当前 `HEAD`（通过分支解析或直接指向的游离提交）以及 `stage_add` 暂存区中的 Blob 哈希作为根集合（live roots）。对所有根提交执行 BFS，沿着父提交链（包含第一、第二父提交及 `commit_parent` 记录）遍历全部可达提交，并将每个可达提交快照（`nameToHash`）引用的 Blob 哈希加入可达集合。
 - **批量删除与空间回收（Sweep + VACUUM）**：在单个 SQLite 事务内，从 `object` 表中批量删除所有不可达的 `commit` 与 `blob` 对象，同时清理 `commit_meta` 和 `commit_parent` 中对应的孤立记录；事务提交后执行 `VACUUM` 重建数据库页，使 `.syncvault/syncvault.db` 文件体积在磁盘上实际收缩。
+- **GC 与 Push 互斥（仓库锁 RepoLock）**：
+  - **语义竞态问题**：SQLite 事务写锁仅保证底层单表或事务原子性，无法防御高层语义竞态：当 GC 计算完成可达集合快照后，并发的 Push 写入新提交和 Blob 并推进分支引用，随后 GC 执行清除阶段将这些未包含在初始快照中的新对象误删，导致分支指向悬空对象。
+  - **互斥模型**：引入仓库级互斥锁 `RepoLock`，在 JVM 进程内使用 `ReentrantLock` 保证重入安全与线程排队，在操作系统层面通过 `.syncvault/repo.lock` 上的 `FileLock` 保证跨进程互斥。Netty 服务的 `handlePushObjects`、本地 `Repository.push` 写入路径与 `Repository.gc()` 均在执行前获取仓库锁，保证 GC 扫描和清理期间禁止并发 Push 写入，Push 写入对象并更新分支引用期间禁止执行 GC。
+- **宽限期与在途写入保护（Grace Period & In-Flight Protection）**：
+  - `object` 表增加 `created_at` 毫秒时间戳记录对象写入时间。
+  - **宽限期（Grace Period）**：`gc(long graceMillis)` 支持指定宽限期（可通过 CLI 参数 `--grace=<ms>` / `--grace-seconds=<s>`、系统属性 `syncvault.gc.graceMs` 或环境变量 `SYNCVAULT_GC_GRACE_MS` 配置，默认 0 保持即时清理兼容性）。凡在宽限窗口内新写入的对象（`createdAt >= gcStartTime - graceMillis`）本轮 GC 不予清除。若某一不可达 commit 处于宽限期内，其快照包含的全部 blob 亦自动继承保留。
+  - **在途写入保护（In-Flight Protection）**：Push 事务执行期间通过 `session.startInFlightPush()` / `endInFlightPush()` 跟踪活跃写入会话，在途状态下写入的对象即使暂无引用指向，亦豁免于同轮 GC 清理。

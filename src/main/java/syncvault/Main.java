@@ -221,11 +221,15 @@ public class Main {
                 }
                 break;
             case "gc":
-                if (args.length != 1) {
+                if (args.length == 1) {
+                    Repository.gc();
+                } else if (args.length == 2) {
+                    long graceMs = parseGraceArgument(args[1]);
+                    Repository.gc(graceMs);
+                } else {
                     System.out.println("Incorrect operands.");
                     System.exit(0);
                 }
-                Repository.gc();
                 break;
             default:
                 System.out.println("No command with that name exists.");
@@ -343,5 +347,33 @@ public class Main {
             System.out.println(e.getMessage());
             System.exit(0);
         }
+    }
+
+    static long parseGraceArgument(String arg) {
+        if (arg == null || arg.isBlank()) {
+            System.out.println("Incorrect operands.");
+            System.exit(0);
+        }
+        try {
+            if (arg.startsWith("--grace-seconds=")) {
+                long sec = Long.parseLong(arg.substring("--grace-seconds=".length()).trim());
+                if (sec < 0) throw new NumberFormatException();
+                return sec * 1000L;
+            } else if (arg.startsWith("--grace-ms=")) {
+                long ms = Long.parseLong(arg.substring("--grace-ms=".length()).trim());
+                if (ms < 0) throw new NumberFormatException();
+                return ms;
+            } else if (arg.startsWith("--grace=")) {
+                long val = Long.parseLong(arg.substring("--grace=".length()).trim());
+                if (val < 0) throw new NumberFormatException();
+                return val;
+            } else if (arg.matches("^\\d+$")) {
+                return Long.parseLong(arg.trim());
+            }
+        } catch (NumberFormatException ignored) {
+        }
+        System.out.println("Incorrect operands.");
+        System.exit(0);
+        return 0L;
     }
 }

@@ -24,7 +24,7 @@ SyncVault 是一个轻量级的类似 Git 的版本控制系统（VCS）。本�
   - `reset`：将当前分支 HEAD 回滚至指定提交并恢复工作区。
   - `merge`：将指定分支合并到当前分支，支持冲突处理与分叉点（split point）定位。
   - `resolve <file> --ours|--theirs|[--combined]`：按侧选择解决工作区冲突标记并自动 `add` 暂存；`resolve --all --ours|--theirs` 可一次处理全部冲突文件。
-  - `gc`：从所有分支引用、`HEAD` 与暂存区出发进行可达性分析，清理不可达的提交和 Blob 对象，并执行 SQLite `VACUUM` 回收磁盘空间。
+  - `gc [--grace-seconds=<s>]`：从所有分支引用、`HEAD` 与暂存区出发进行可达性分析，清理不可达的提交和 Blob 对象，通过仓库锁保证与 push 互斥，并执行 SQLite `VACUUM` 回收磁盘空间。
 - **远程仓库基础命令**：
   - `add-remote`：添加远程仓库信息与关联路径或网络地址（支持本地目录路径、`host:port`、`netty://host:port` 以及 TLS 加密的 `nettys://host:port`）。
   - `rm-remote`：移除远程仓库配置。
@@ -122,9 +122,11 @@ java -jar target/syncvault-0.1.0-SNAPSHOT.jar fetch origin master --token=my-sha
 java -jar target/syncvault-0.1.0-SNAPSHOT.jar web 8080
 ```
 
-执行垃圾回收清理不可达对象并收缩数据库体积：
+执行垃圾回收清理不可达对象并收缩数据库体积（支持可选宽限期与仓库锁并发保护）：
 ```bash
 java -jar target/syncvault-0.1.0-SNAPSHOT.jar gc
+# 或指定宽限期（例如保留近 60 秒内写入的对象）
+java -jar target/syncvault-0.1.0-SNAPSHOT.jar gc --grace-seconds=60
 ```
 
 ## 测试

@@ -1,9 +1,23 @@
 # SyncVault
-> A lightweight Git-like version control system designed for multi-device asset synchronization.
+> 多设备资产同步引擎：本地 Git 子集 + Netty 同步 + SQLite 单库。
 
-## 简介
+<!-- 有截图后取消下一行注释：![提交 DAG 与冲突面板](docs/images/dag.png) -->
 
-SyncVault 是一个轻量级的类似 Git 的版本控制系统（VCS）。本项目演化自作者在加利福尼亚大学伯克利分校 CS61B（2021 Spring）课程中实现的 Gitlet 项目（原始仓库：https://github.com/NelxJoe306/Gitlet ）。项目的核心目标是发展为一个支持多设备资产同步的现代版本控制与同步工具。
+```text
+  工作区 / CLI / Web UI（DAG + 冲突面板）
+            │
+            ▼
+     SyncVault 核心（提交 · Diff3 · journal）
+            │
+     ┌──────┴──────┐
+     ▼             ▼
+  SQLite 对象库    Netty push / fetch / pull
+  (.syncvault.db)  (token · 可选 TLS)
+```
+
+- **多设备同步**：Netty `push` / `fetch` / `pull`，共享令牌鉴权，可选 TLS（`nettys://`）。
+- **逐行 Diff3 + 冲突面板**：命令行 `resolve`；本地 Web 展示提交 **DAG + 冲突面板**，支持 Ours / Theirs 一键解决。
+- **可靠本地仓**：SQLite 单库对象存储，`gc` / 只读 `fsck`，工作区原子写入与 journal 可恢复。
 
 ## 当前功能
 
@@ -33,7 +47,7 @@ SyncVault 是一个轻量级的类似 Git 的版本控制系统（VCS）。本�
   - `fetch`：从远程仓库拉取提交与分支历史（网络远程支持 `--token`、`--tls-ca`、`--tls-insecure`）。
   - `pull`：从远程拉取并合并至当前分支（网络远程支持 `--token`、`--tls-ca`、`--tls-insecure`）。
   - `serve [port]`：启动基于 Netty 的 TCP 同步服务端（默认端口 `9418`），支持共享令牌鉴权（`--token` / `SYNCVAULT_SYNC_TOKEN` / `.syncvault/sync-token`）与可选 TLS 加密（`--tls-cert` + `--tls-key` / `SYNCVAULT_TLS_CERT` + `SYNCVAULT_TLS_KEY`）。
-  - `web [port]`：启动本地 Web UI 与 JSON API 服务（默认端口 `8080`），提供基于 Vis.js (`vis-network`) 的交互式提交 DAG 图、提交详情检视、文件树 / Blob 原文预览，以及冲突文件的 Use Ours / Use Theirs 一键解决（`POST /api/resolve`，仅操作本机工作区）。
+  - `web [port]`：启动本地 Web（默认端口 `8080`）：提交 **DAG + 冲突面板**，以及提交详情 / 文件预览；冲突可通过 Use Ours / Use Theirs 一键解决（`POST /api/resolve`，仅本机工作区）。
 - **可插拔哈希架构**：
   - 定义了 `HashFunction` 抽象接口，提供可插拔的哈希算法支持（已包含 SHA-256 与 SHA-1 实现）。
 - **SQLite 存储引擎**：
@@ -170,3 +184,7 @@ java -jar target/syncvault-0.1.0-SNAPSHOT.jar bench 1000 5000 10000
 - [x] gc 垃圾回收
 - [x] 只读 fsck（引用、父提交 / 文件映射、内容哈希）
 - [x] Web UI (Vis.js 提交图)
+
+## 背景
+
+由 CS61B（2021 Spring）Gitlet 演化，原仓库：[NelxJoe306/Gitlet](https://github.com/NelxJoe306/Gitlet)。

@@ -40,6 +40,9 @@ SyncVault 是一个轻量级的类似 Git 的版本控制系统（VCS）。本�
   - 版本库全部元数据、提交、引用、暂存区及对象均存储于 `.syncvault/syncvault.db`（SQLite），提供 ACID 事务保证与单文件嵌入式存储，离线环境下无需运行任何外部数据库服务。
 - **显式提交 / 同步编码（0.1.0-SNAPSHOT，不兼容旧库）**：
   - 提交对象与 Netty 同步帧使用 SVC1 / SVM1 字段编码，不再使用 Java 原生序列化。提交 id 是 SVC1 规范字节的哈希（默认 SHA-256）。已有仓库里的旧序列化对象不会被自动迁移，需要重新 `init`。格式与离线只读说明见 [docs/design.md](docs/design.md)。
+- **工作区原子更新与事务日志 (Atomic Workspace Updates)**：
+  - `checkout`、`reset`、`merge` 等工作区写入操作采用「临时文件落地 + 原子 rename」机制，保证单个文件在写入中断时绝不产生截断或空文件半残状态。
+  - 多文件工作区切换引入事务日志（`.syncvault/workspace_journal`），中断时在启动期提供明确的可恢复状态（`syncvault abort` 回滚至一致原状态，`syncvault continue` 或 `recover --continue` 前进至目标状态），杜绝工作区与数据库状态静默半残。
 
 ## 目录结构
 

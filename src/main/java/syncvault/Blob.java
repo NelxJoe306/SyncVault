@@ -41,7 +41,7 @@ public class Blob implements Serializable{
      *             filename stores all the stage files' name by using newfilename and oldfilename
      */
     public static void saveToStage(String name) throws IOException {
-        File f = join(CWD, name);  /* target file to stage*/
+        File f = join(getCwd(), name);  /* target file to stage*/
         Blob b = new Blob(f);
 
         Store.unstageRemove(name);

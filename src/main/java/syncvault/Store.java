@@ -18,11 +18,17 @@ public class Store {
         void run() throws Exception;
     }
 
+    public static volatile Runnable gcReachabilityHook = null;
+
     public record CommitMeta(String hash, String message, long timestamp) {}
 
     public record CommitParent(String child, String parent, int idx) {}
 
-    public record ObjectStat(String hash, String type, long size) {}
+    public record ObjectStat(String hash, String type, long size, long createdAt) {
+        public ObjectStat(String hash, String type, long size) {
+            this(hash, type, size, 0L);
+        }
+    }
 
     public record GcResult(
             int deletedCommits,
@@ -236,8 +242,32 @@ public class Store {
         getDefault().vacuum();
     }
 
+    public static RepoLock acquireLock() {
+        return getDefault().acquireLock();
+    }
+
+    public static long resolveDefaultGraceMs() {
+        String env = System.getenv("SYNCVAULT_GC_GRACE_MS");
+        if (env != null && !env.isBlank()) {
+            try {
+                return Long.parseLong(env.trim());
+            } catch (NumberFormatException ignored) {}
+        }
+        String prop = System.getProperty("syncvault.gc.graceMs");
+        if (prop != null && !prop.isBlank()) {
+            try {
+                return Long.parseLong(prop.trim());
+            } catch (NumberFormatException ignored) {}
+        }
+        return 0L;
+    }
+
     public static GcResult gc() {
         return getDefault().gc();
+    }
+
+    public static GcResult gc(long graceMillis) {
+        return getDefault().gc(graceMillis);
     }
 
     /**
@@ -248,9 +278,74 @@ public class Store {
         private final File dbFile;
         private Connection conn;
         private int txDepth = 0;
+        private final Set<String> inFlightObjects = Collections.synchronizedSet(new HashSet<>());
+        private final java.util.concurrent.atomic.AtomicInteger inFlightPushCount = new java.util.concurrent.atomic.AtomicInteger(0);
 
         public Session(File dbFile) {
             this.dbFile = dbFile;
+        }
+
+        public RepoLock acquireLock() {
+            return RepoLock.acquire(dbFile);
+        }
+
+        public void startInFlightPush() {
+            inFlightPushCount.incrementAndGet();
+        }
+
+        public void endInFlightPush() {
+            if (inFlightPushCount.decrementAndGet() <= 0) {
+                inFlightPushCount.set(0);
+                inFlightObjects.clear();
+            }
+        }
+
+        public void registerInFlightObject(String hash) {
+            if (inFlightPushCount.get() > 0 && hash != null) {
+                inFlightObjects.add(hash);
+            }
+        }
+
+        /**
+         * True only for a hash this push has already written.
+         * An empty {@code inFlightObjects} set protects nothing, including the
+         * window after {@link #startInFlightPush()} and before the first put.
+         * {@link RepoLock} and the grace window remain the primary safety net.
+         */
+        public boolean isObjectInFlight(String hash) {
+            return hash != null
+                    && inFlightPushCount.get() > 0
+                    && inFlightObjects.contains(hash);
+        }
+
+        /**
+         * Shared push critical section: repository lock, in-flight registration,
+         * then one transaction. Used by Netty {@code handlePushObjects} and
+         * local {@code Repository.push}. Only objects written inside {@code body}
+         * are recorded as in-flight.
+         */
+        public void runInFlightPush(ThrowingRunnable body) {
+            try (RepoLock ignored = acquireLock()) {
+                startInFlightPush();
+                try {
+                    begin();
+                    try {
+                        body.run();
+                        commitTx();
+                    } catch (Throwable t) {
+                        rollback();
+                        if (t instanceof RuntimeException) {
+                            throw (RuntimeException) t;
+                        } else if (t instanceof Error) {
+                            throw (Error) t;
+                        } else {
+                            throw new SyncVaultException(t.getMessage());
+                        }
+                    }
+                } finally {
+                    endInFlightPush();
+                }
+            }
         }
 
         public File getDbFile() {
@@ -291,7 +386,7 @@ public class Store {
 
         public void createSchema() {
             String[] statements = new String[]{
-                    "CREATE TABLE IF NOT EXISTS object (hash TEXT PRIMARY KEY, type TEXT NOT NULL, data BLOB NOT NULL);",
+                    "CREATE TABLE IF NOT EXISTS object (hash TEXT PRIMARY KEY, type TEXT NOT NULL, data BLOB NOT NULL, created_at INTEGER);",
                     "CREATE TABLE IF NOT EXISTS commit_meta (hash TEXT PRIMARY KEY, message TEXT NOT NULL, timestamp INTEGER NOT NULL);",
                     "CREATE TABLE IF NOT EXISTS commit_parent (child TEXT NOT NULL, parent TEXT NOT NULL, idx INTEGER NOT NULL, PRIMARY KEY (child, idx));",
                     "CREATE INDEX IF NOT EXISTS idx_commit_parent_parent ON commit_parent(parent);",
@@ -305,16 +400,26 @@ public class Store {
                 for (String sql : statements) {
                     stmt.execute(sql);
                 }
+                try {
+                    stmt.execute("ALTER TABLE object ADD COLUMN created_at INTEGER;");
+                } catch (SQLException ignored) {
+                }
             } catch (SQLException e) {
                 throw new SyncVaultException(e.getMessage());
             }
         }
 
         public void putBlob(String hash, byte[] bytes) {
-            String sql = "INSERT OR IGNORE INTO object (hash, type, data) VALUES (?, 'blob', ?)";
+            putBlob(hash, bytes, System.currentTimeMillis());
+        }
+
+        public void putBlob(String hash, byte[] bytes, long createdAt) {
+            registerInFlightObject(hash);
+            String sql = "INSERT OR IGNORE INTO object (hash, type, data, created_at) VALUES (?, 'blob', ?, ?)";
             try (PreparedStatement pstmt = getConnection().prepareStatement(sql)) {
                 pstmt.setString(1, hash);
                 pstmt.setBytes(2, bytes);
+                pstmt.setLong(3, createdAt);
                 pstmt.executeUpdate();
             } catch (SQLException e) {
                 throw new SyncVaultException(e.getMessage());
@@ -349,12 +454,18 @@ public class Store {
         }
 
         public void putCommit(Commit c) {
+            putCommit(c, System.currentTimeMillis());
+        }
+
+        public void putCommit(Commit c, long createdAt) {
+            registerInFlightObject(c.getSelfHash());
             byte[] data = c.encode();
             try {
                 try (PreparedStatement pstmt = getConnection().prepareStatement(
-                        "INSERT OR REPLACE INTO object (hash, type, data) VALUES (?, 'commit', ?)")) {
+                        "INSERT OR REPLACE INTO object (hash, type, data, created_at) VALUES (?, 'commit', ?, ?)")) {
                     pstmt.setString(1, c.getSelfHash());
                     pstmt.setBytes(2, data);
+                    pstmt.setLong(3, createdAt);
                     pstmt.executeUpdate();
                 }
                 try (PreparedStatement pstmt = getConnection().prepareStatement(
@@ -832,12 +943,12 @@ public class Store {
         }
 
         public List<ObjectStat> allObjects() {
-            String sql = "SELECT hash, type, length(data) FROM object ORDER BY hash ASC";
+            String sql = "SELECT hash, type, length(data), COALESCE(created_at, 0) FROM object ORDER BY hash ASC";
             List<ObjectStat> list = new ArrayList<>();
             try (PreparedStatement pstmt = getConnection().prepareStatement(sql);
                  ResultSet rs = pstmt.executeQuery()) {
                 while (rs.next()) {
-                    list.add(new ObjectStat(rs.getString(1), rs.getString(2), rs.getLong(3)));
+                    list.add(new ObjectStat(rs.getString(1), rs.getString(2), rs.getLong(3), rs.getLong(4)));
                 }
                 return list;
             } catch (SQLException e) {
@@ -895,119 +1006,160 @@ public class Store {
         }
 
         public GcResult gc() {
-            long dbBefore = dbFile.exists() ? dbFile.length() : 0L;
+            return gc(resolveDefaultGraceMs());
+        }
 
-            final int[] counts = new int[4];
-            final long[] reclaimedBytes = new long[1];
+        public GcResult gc(long graceMillis) {
+            try (RepoLock lock = acquireLock()) {
+                long dbBefore = dbFile.exists() ? dbFile.length() : 0L;
+                long gcStartTime = System.currentTimeMillis();
+                long graceCutoff = (graceMillis > 0) ? (gcStartTime - graceMillis) : Long.MAX_VALUE;
 
-            transaction(() -> {
-                Set<String> reachableCommits = new HashSet<>();
-                Set<String> reachableBlobs = new HashSet<>();
+                final int[] counts = new int[4];
+                final long[] reclaimedBytes = new long[1];
 
-                for (String blobHash : stagedAdditions().values()) {
-                    if (blobHash != null && !blobHash.isEmpty()) {
-                        reachableBlobs.add(blobHash);
+                transaction(() -> {
+                    Set<String> reachableCommits = new HashSet<>();
+                    Set<String> reachableBlobs = new HashSet<>();
+
+                    for (String blobHash : stagedAdditions().values()) {
+                        if (blobHash != null && !blobHash.isEmpty()) {
+                            reachableBlobs.add(blobHash);
+                        }
                     }
-                }
 
-                Queue<String> commitQueue = new ArrayDeque<>();
-                for (String refTarget : allRefs().values()) {
-                    if (refTarget != null && !refTarget.isEmpty()) {
-                        commitQueue.add(refTarget);
+                    Queue<String> commitQueue = new ArrayDeque<>();
+                    for (String refTarget : allRefs().values()) {
+                        if (refTarget != null && !refTarget.isEmpty()) {
+                            commitQueue.add(refTarget);
+                        }
                     }
-                }
-                String head = getHead();
-                if (head != null && !head.isEmpty()) {
-                    String headRef = getRef(head);
-                    if (headRef != null && !headRef.isEmpty()) {
-                        commitQueue.add(headRef);
-                    } else {
-                        commitQueue.add(head);
+                    String head = getHead();
+                    if (head != null && !head.isEmpty()) {
+                        String headRef = getRef(head);
+                        if (headRef != null && !headRef.isEmpty()) {
+                            commitQueue.add(headRef);
+                        } else {
+                            commitQueue.add(head);
+                        }
                     }
-                }
 
-                Map<String, List<String>> parentEdges = new HashMap<>();
-                for (CommitParent cp : allCommitParents()) {
-                    parentEdges.computeIfAbsent(cp.child(), k -> new ArrayList<>()).add(cp.parent());
-                }
-
-                while (!commitQueue.isEmpty()) {
-                    String commitHash = commitQueue.poll();
-                    if (commitHash == null || reachableCommits.contains(commitHash)) {
-                        continue;
+                    Map<String, List<String>> parentEdges = new HashMap<>();
+                    for (CommitParent cp : allCommitParents()) {
+                        parentEdges.computeIfAbsent(cp.child(), k -> new ArrayList<>()).add(cp.parent());
                     }
-                    Commit c = getCommit(commitHash);
-                    if (c == null) {
-                        continue;
-                    }
-                    reachableCommits.add(commitHash);
 
-                    if (c.getNameToHash() != null) {
-                        for (String blobHash : c.getNameToHash().values()) {
-                            if (blobHash != null && !blobHash.isEmpty()) {
-                                reachableBlobs.add(blobHash);
+                    while (!commitQueue.isEmpty()) {
+                        String commitHash = commitQueue.poll();
+                        if (commitHash == null || reachableCommits.contains(commitHash)) {
+                            continue;
+                        }
+                        Commit c = getCommit(commitHash);
+                        if (c == null) {
+                            continue;
+                        }
+                        reachableCommits.add(commitHash);
+
+                        if (c.getNameToHash() != null) {
+                            for (String blobHash : c.getNameToHash().values()) {
+                                if (blobHash != null && !blobHash.isEmpty()) {
+                                    reachableBlobs.add(blobHash);
+                                }
+                            }
+                        }
+
+                        if (c.getParent() != null && !reachableCommits.contains(c.getParent())) {
+                            commitQueue.add(c.getParent());
+                        }
+                        if (c.getSecondParent() != null && !reachableCommits.contains(c.getSecondParent())) {
+                            commitQueue.add(c.getSecondParent());
+                        }
+                        List<String> extraParents = parentEdges.get(commitHash);
+                        if (extraParents != null) {
+                            for (String p : extraParents) {
+                                if (p != null && !reachableCommits.contains(p)) {
+                                    commitQueue.add(p);
+                                }
                             }
                         }
                     }
 
-                    if (c.getParent() != null && !reachableCommits.contains(c.getParent())) {
-                        commitQueue.add(c.getParent());
+                    // Test hook to allow interleaving tests before querying objects
+                    if (gcReachabilityHook != null) {
+                        gcReachabilityHook.run();
                     }
-                    if (c.getSecondParent() != null && !reachableCommits.contains(c.getSecondParent())) {
-                        commitQueue.add(c.getSecondParent());
-                    }
-                    List<String> extraParents = parentEdges.get(commitHash);
-                    if (extraParents != null) {
-                        for (String p : extraParents) {
-                            if (p != null && !reachableCommits.contains(p)) {
-                                commitQueue.add(p);
+
+                    List<ObjectStat> allObjs = allObjects();
+
+                    // If an unreachable commit is in grace or in-flight, protect its referenced blobs as well
+                    for (ObjectStat obj : allObjs) {
+                        if ("commit".equals(obj.type()) && !reachableCommits.contains(obj.hash())) {
+                            boolean inGrace = (graceMillis > 0 && obj.createdAt() > 0 && obj.createdAt() >= graceCutoff)
+                                    || isObjectInFlight(obj.hash());
+                            if (inGrace) {
+                                Commit c = getCommit(obj.hash());
+                                if (c != null && c.getNameToHash() != null) {
+                                    for (String blobHash : c.getNameToHash().values()) {
+                                        if (blobHash != null && !blobHash.isEmpty()) {
+                                            reachableBlobs.add(blobHash);
+                                        }
+                                    }
+                                }
                             }
                         }
                     }
-                }
 
-                List<ObjectStat> allObjs = allObjects();
-                List<String> unreachableHashes = new ArrayList<>();
-                for (ObjectStat obj : allObjs) {
-                    boolean reachable;
-                    if ("commit".equals(obj.type())) {
-                        reachable = reachableCommits.contains(obj.hash());
-                    } else if ("blob".equals(obj.type())) {
-                        reachable = reachableBlobs.contains(obj.hash());
-                    } else {
-                        reachable = reachableCommits.contains(obj.hash()) || reachableBlobs.contains(obj.hash());
+                    List<String> unreachableHashes = new ArrayList<>();
+                    for (ObjectStat obj : allObjs) {
+                        boolean reachable;
+                        if ("commit".equals(obj.type())) {
+                            reachable = reachableCommits.contains(obj.hash());
+                        } else if ("blob".equals(obj.type())) {
+                            reachable = reachableBlobs.contains(obj.hash());
+                        } else {
+                            reachable = reachableCommits.contains(obj.hash()) || reachableBlobs.contains(obj.hash());
+                        }
+
+                        boolean inGrace = false;
+                        if (!reachable) {
+                            if (graceMillis > 0 && obj.createdAt() > 0 && obj.createdAt() >= graceCutoff) {
+                                inGrace = true;
+                            } else if (isObjectInFlight(obj.hash())) {
+                                inGrace = true;
+                            }
+                        }
+
+                        if (reachable || inGrace) {
+                            if ("commit".equals(obj.type())) {
+                                counts[2]++;
+                            } else {
+                                counts[3]++;
+                            }
+                        } else {
+                            unreachableHashes.add(obj.hash());
+                            reclaimedBytes[0] += obj.size();
+                            if ("commit".equals(obj.type())) {
+                                counts[0]++;
+                            } else {
+                                counts[1]++;
+                            }
+                        }
                     }
 
-                    if (reachable) {
-                        if ("commit".equals(obj.type())) {
-                            counts[2]++;
-                        } else {
-                            counts[3]++;
-                        }
-                    } else {
-                        unreachableHashes.add(obj.hash());
-                        reclaimedBytes[0] += obj.size();
-                        if ("commit".equals(obj.type())) {
-                            counts[0]++;
-                        } else {
-                            counts[1]++;
-                        }
+                    deleteObjects(unreachableHashes);
+
+                    try (Statement stmt = getConnection().createStatement()) {
+                        stmt.executeUpdate("DELETE FROM commit_meta WHERE hash NOT IN (SELECT hash FROM object WHERE type = 'commit')");
+                        stmt.executeUpdate("DELETE FROM commit_parent WHERE child NOT IN (SELECT hash FROM commit_meta) OR parent NOT IN (SELECT hash FROM commit_meta)");
                     }
+                });
+
+                if (txDepth == 0) {
+                    vacuum();
                 }
-
-                deleteObjects(unreachableHashes);
-
-                try (Statement stmt = getConnection().createStatement()) {
-                    stmt.executeUpdate("DELETE FROM commit_meta WHERE hash NOT IN (SELECT hash FROM object WHERE type = 'commit')");
-                    stmt.executeUpdate("DELETE FROM commit_parent WHERE child NOT IN (SELECT hash FROM commit_meta) OR parent NOT IN (SELECT hash FROM commit_meta)");
-                }
-            });
-
-            if (txDepth == 0) {
-                vacuum();
+                long dbAfter = dbFile.exists() ? dbFile.length() : 0L;
+                return new GcResult(counts[0], counts[1], counts[2], counts[3], reclaimedBytes[0], dbBefore, dbAfter);
             }
-            long dbAfter = dbFile.exists() ? dbFile.length() : 0L;
-            return new GcResult(counts[0], counts[1], counts[2], counts[3], reclaimedBytes[0], dbBefore, dbAfter);
         }
     }
 }

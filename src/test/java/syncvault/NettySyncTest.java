@@ -591,14 +591,13 @@ public class NettySyncTest {
 
         String missingParentId = "0123456789abcdef0123456789abcdef01234567";
         Commit commit = new Commit("commit with missing parent", new TreeMap<>(), missingParentId);
-        byte[] commitBytes = Utils.serialize(commit);
-        String tipHash = Utils.hash(commitBytes);
+        String tipHash = commit.contentId();
         commit.setSelfHash(tipHash);
 
         SyncMessage pushMsg = SyncMessage.pushObjects(
                 "master",
                 tipHash,
-                List.of(Utils.serialize(commit)),
+                List.of(commit.encode()),
                 Collections.emptyMap()
         );
 
@@ -625,14 +624,13 @@ public class NettySyncTest {
         TreeMap<String, String> fileMap = new TreeMap<>();
         fileMap.put("ghost.txt", missingBlobHash);
         Commit commit = new Commit("commit with missing blob", fileMap, serverInitId);
-        byte[] commitBytes = Utils.serialize(commit);
-        String tipHash = Utils.hash(commitBytes);
+        String tipHash = commit.contentId();
         commit.setSelfHash(tipHash);
 
         SyncMessage pushMsg = SyncMessage.pushObjects(
                 "master",
                 tipHash,
-                List.of(Utils.serialize(commit)),
+                List.of(commit.encode()),
                 Collections.emptyMap()
         );
 
@@ -702,8 +700,7 @@ public class NettySyncTest {
         TreeMap<String, String> map1 = new TreeMap<>();
         map1.put("file1.txt", blob1);
         Commit commit1 = new Commit("commit 1", map1, initId);
-        byte[] c1Bytes = Utils.serialize(commit1);
-        String c1 = Utils.hash(c1Bytes);
+        String c1 = commit1.contentId();
         commit1.setSelfHash(c1);
         Store.putCommit(commit1);
 
@@ -714,8 +711,7 @@ public class NettySyncTest {
         TreeMap<String, String> map2 = new TreeMap<>();
         map2.put("file2.txt", blob2);
         Commit commit2 = new Commit("commit 2", map2, initId);
-        byte[] c2Bytes = Utils.serialize(commit2);
-        String c2 = Utils.hash(c2Bytes);
+        String c2 = commit2.contentId();
         commit2.setSelfHash(c2);
         Store.putCommit(commit2);
 
@@ -728,8 +724,7 @@ public class NettySyncTest {
         mergeMap.put("file2.txt", blob2);
         mergeMap.put("file3.txt", blob3);
         Commit mergeCommit = new Commit("merge commit", mergeMap, c1, c2);
-        byte[] mergeBytes = Utils.serialize(mergeCommit);
-        String mergeTip = Utils.hash(mergeBytes);
+        String mergeTip = mergeCommit.contentId();
         mergeCommit.setSelfHash(mergeTip);
         Store.putCommit(mergeCommit);
         Store.setRef("master", mergeTip);

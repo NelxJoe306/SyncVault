@@ -319,32 +319,31 @@ public class NettyServer implements AutoCloseable {
         }
 
         private void handlePushObjects(ChannelHandlerContext ctx, SyncMessage msg) {
-            session.begin();
             try {
-                if (msg.branch == null || msg.branch.isEmpty()) {
-                    throw new SyncVaultException("Push rejected: branch name cannot be empty.");
-                }
-                if (msg.commits != null) {
-                    for (byte[] commitBytes : msg.commits) {
-                        Commit c = SyncMessage.deserializeCommit(commitBytes);
-                        if (!session.hasObject(c.getSelfHash())) {
-                            session.putCommit(c);
+                session.runInFlightPush(() -> {
+                    if (msg.branch == null || msg.branch.isEmpty()) {
+                        throw new SyncVaultException("Push rejected: branch name cannot be empty.");
+                    }
+                    if (msg.commits != null) {
+                        for (byte[] commitBytes : msg.commits) {
+                            Commit c = SyncMessage.deserializeCommit(commitBytes);
+                            if (!session.hasObject(c.getSelfHash())) {
+                                session.putCommit(c);
+                            }
                         }
                     }
-                }
-                if (msg.blobs != null) {
-                    for (Map.Entry<String, byte[]> entry : msg.blobs.entrySet()) {
-                        if (!session.hasObject(entry.getKey())) {
-                            session.putBlob(entry.getKey(), entry.getValue());
+                    if (msg.blobs != null) {
+                        for (Map.Entry<String, byte[]> entry : msg.blobs.entrySet()) {
+                            if (!session.hasObject(entry.getKey())) {
+                                session.putBlob(entry.getKey(), entry.getValue());
+                            }
                         }
                     }
-                }
-                verifyPushIntegrity(session, msg.tipHash);
-                session.setRef(msg.branch, msg.tipHash);
-                session.commitTx();
+                    verifyPushIntegrity(session, msg.tipHash);
+                    session.setRef(msg.branch, msg.tipHash);
+                });
                 ctx.writeAndFlush(SyncMessage.ack());
             } catch (Throwable t) {
-                session.rollback();
                 ctx.writeAndFlush(SyncMessage.error(t.getMessage()));
             }
         }

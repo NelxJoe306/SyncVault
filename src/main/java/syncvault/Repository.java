@@ -877,33 +877,33 @@ public class Repository {
         }
 
         // Copy commits and blobs from local to remote
-        remoteStore.begin();
-        Queue<String> qSync = new ArrayDeque<>();
-        Set<String> visitedSync = new HashSet<>();
-        qSync.add(currHead);
-        visitedSync.add(currHead);
-        while (!qSync.isEmpty()) {
-            String id = qSync.poll();
-            if (!remoteStore.hasObject(id)) {
-                Commit c = Store.getCommit(id);
-                remoteStore.putCommit(c);
-                for (String blobHash : c.getNameToHash().values()) {
-                    byte[] localBlob = Store.getBlob(blobHash);
-                    if (localBlob != null && !remoteStore.hasObject(blobHash)) {
-                        remoteStore.putBlob(blobHash, localBlob);
+        remoteStore.runInFlightPush(() -> {
+            Queue<String> qSync = new ArrayDeque<>();
+            Set<String> visitedSync = new HashSet<>();
+            qSync.add(currHead);
+            visitedSync.add(currHead);
+            while (!qSync.isEmpty()) {
+                String id = qSync.poll();
+                if (!remoteStore.hasObject(id)) {
+                    Commit c = Store.getCommit(id);
+                    remoteStore.putCommit(c);
+                    for (String blobHash : c.getNameToHash().values()) {
+                        byte[] localBlob = Store.getBlob(blobHash);
+                        if (localBlob != null && !remoteStore.hasObject(blobHash)) {
+                            remoteStore.putBlob(blobHash, localBlob);
+                        }
+                    }
+                }
+                for (String p : Commit.return_parents(id)) {
+                    if (p != null && !visitedSync.contains(p)) {
+                        visitedSync.add(p);
+                        qSync.add(p);
                     }
                 }
             }
-            for (String p : Commit.return_parents(id)) {
-                if (p != null && !visitedSync.contains(p)) {
-                    visitedSync.add(p);
-                    qSync.add(p);
-                }
-            }
-        }
 
-        remoteStore.setRef(branchName, currHead);
-        remoteStore.commitTx();
+            remoteStore.setRef(branchName, currHead);
+        });
         remoteStore.close();
     }
 
@@ -1184,7 +1184,18 @@ public class Repository {
      * @return summary statistics of the garbage collection run
      */
     public static Store.GcResult gc() {
-        Store.GcResult res = Store.gc();
+        return gc(Store.resolveDefaultGraceMs());
+    }
+
+    /**
+     * Runs garbage collection on the current repository with a specified grace period.
+     * Objects written within the grace period or during an in-flight push are preserved.
+     *
+     * @param graceMillis grace period in milliseconds
+     * @return summary statistics of the garbage collection run
+     */
+    public static Store.GcResult gc(long graceMillis) {
+        Store.GcResult res = Store.gc(graceMillis);
         System.out.printf(
                 "Garbage collection complete: removed %d unreachable objects (%d commits, %d blobs), reclaimed %d bytes (kept %d objects, db %d -> %d bytes).%n",
                 res.deletedObjects(),

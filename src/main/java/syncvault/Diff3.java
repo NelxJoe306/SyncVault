@@ -1,4 +1,4 @@
-package gitlet;
+package syncvault;
 
 import java.nio.ByteBuffer;
 import java.nio.CharBuffer;
@@ -629,7 +629,7 @@ public final class Diff3 {
      */
     public static String normalizeSide(String side) {
         if (side == null) {
-            throw new GitletException("Incorrect operands.");
+            throw new SyncVaultException("Incorrect operands.");
         }
         String s = side.trim().toLowerCase();
         if (s.startsWith("--")) {
@@ -637,7 +637,7 @@ public final class Diff3 {
         }
         return switch (s) {
             case "ours", "theirs", "combined" -> s;
-            default -> throw new GitletException("Incorrect operands.");
+            default -> throw new SyncVaultException("Incorrect operands.");
         };
     }
 
@@ -649,7 +649,7 @@ public final class Diff3 {
     public static String resolve(String text, String side) {
         String normalizedSide = normalizeSide(side);
         if (text == null || !hasConflictMarkers(text)) {
-            throw new GitletException("File has no conflict markers.");
+            throw new SyncVaultException("File has no conflict markers.");
         }
         List<Section> sections = parseSections(text);
         List<String> outLines = new ArrayList<>();
@@ -676,14 +676,14 @@ public final class Diff3 {
                             outLines.addAll(section.theirs());
                         }
                     }
-                    default -> throw new GitletException("Incorrect operands.");
+                    default -> throw new SyncVaultException("Incorrect operands.");
                 }
             } else if (section.lines() != null) {
                 outLines.addAll(section.lines());
             }
         }
         if (!sawConflict) {
-            throw new GitletException("File has no conflict markers.");
+            throw new SyncVaultException("File has no conflict markers.");
         }
         return joinLines(outLines, endsWithNewline(text));
     }
@@ -696,7 +696,7 @@ public final class Diff3 {
         String normalizedSide = normalizeSide(side);
         String text = tryDecodeUtf8Text(bytes);
         if (text == null || !hasConflictMarkers(text)) {
-            throw new GitletException("File has no conflict markers.");
+            throw new SyncVaultException("File has no conflict markers.");
         }
         return resolve(text, normalizedSide).getBytes(StandardCharsets.UTF_8);
     }

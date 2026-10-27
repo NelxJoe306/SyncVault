@@ -1,4 +1,4 @@
-# Gitlet 设计说明
+# SyncVault 设计说明
 
 代码仍是原来的四个类：`Main` 读命令，`Repository` 管仓库和大部分命令，`Commit` 管提交、分支指针和 `commitInCurrBran`，`Blob` 管暂存。`Utils` 是课程给的工具，没有改。下面写的是修过正确性之后、这些类实际在做什么。
 
@@ -6,24 +6,24 @@
 
 `Main` 检查参数个数。除了 `init`，每条命令开始前从 `HEAD` 读出当前分支名，再从 `ref/<分支>` 读出 `Repository.currHead`。`commit` 调用 `Commit.commitInCurrBran`，`branch` / `rm-branch` 也在 `Commit` 里。其余命令进 `Repository`。
 
-`Repository` 里的路径都是 `public static final File`：工作目录、`.gitlet`、`blobs`、`commits`、`stage`、`ref`、`rm`、`remotes`，再加上 `HEAD` 和当前提交 id `currHead`。命令都是静态方法，名字保持原来的 `check_file`、`check_id`、`check_branch`、`global_log`、`find_latest_ances_id`。
+`Repository` 里的路径都是 `public static final File`：工作目录、`.syncvault`、`blobs`、`commits`、`stage`、`ref`、`rm`、`remotes`，再加上 `HEAD` 和当前提交 id `currHead`。命令都是静态方法，名字保持原来的 `check_file`、`check_id`、`check_branch`、`global_log`、`find_latest_ances_id`。
 
 `Commit` 序列化进 `commits/<id>`。字段是 message、timestamp、parent、secondParent、self_hash、`TreeMap<String, String> nameToHash`（文件名到 blob id）。`log` 仍通过 `returnInfo()` 取日期、message、id、父节点，以及 merge 时两个父节点的前 7 位。
 
 `Blob` 不单独序列化成对象。`saveToStage` 把文件字节的 SHA-1 写进 `stage/<hash>`，并在 `stage/files` 这张表里记下「文件名 → hash」。
 
-## `.gitlet` 布局
+## `.syncvault` 布局
 
 ```
-.gitlet/HEAD                 当前分支名
-.gitlet/commits/<id>         序列化的 Commit，文件名是提交 id
-.gitlet/blobs/<id>           文件原文的字节
-.gitlet/stage/files          暂存新增：文件名 → blob id
-.gitlet/stage/<id>           这次暂存的文件字节，commit 时拷进 blobs
-.gitlet/ref/<分支>           分支指向的提交 id
-.gitlet/ref/<remote>/<分支>  fetch 下来的远程跟踪分支
-.gitlet/rm/<文件名>          暂存删除。在不在，看文件名，不看内容
-.gitlet/remotes/<名字>       远程 .gitlet 目录的路径
+.syncvault/HEAD                 当前分支名
+.syncvault/commits/<id>         序列化的 Commit，文件名是提交 id
+.syncvault/blobs/<id>           文件原文的字节
+.syncvault/stage/files          暂存新增：文件名 → blob id
+.syncvault/stage/<id>           这次暂存的文件字节，commit 时拷进 blobs
+.syncvault/ref/<分支>           分支指向的提交 id
+.syncvault/ref/<remote>/<分支>  fetch 下来的远程跟踪分支
+.syncvault/rm/<文件名>          暂存删除。在不在，看文件名，不看内容
+.syncvault/remotes/<名字>       远程 .syncvault 目录的路径
 ```
 
 `plainFilenamesIn` 只看一层文件，看不见 `ref/R1/master`。要判断远程跟踪分支在不在，直接看 `ref` 下面按 `/` 拆开的那个文件在不在。`status` 列分支时会走进子目录。
@@ -61,11 +61,11 @@ merge 的八条规则还在 `Repository.merge` 里：当前和给定相同就保
 `fetch` 把远程分支能到达的提交和 blob 按原始字节拷进来，并写下 `ref/<remote>/<分支>`。`push` 要求远程该分支不存在，或者它的头从本地头能沿父节点走到；否则 `Please pull down remote changes before pushing.` 拷贝同样用字节。`pull` 是 fetch 之后 merge 这个远程跟踪分支。`check_branch` 用文件是否存在判断 `R1/master`，不再只用 `plainFilenamesIn(ref)`。
 
 远程支持两种地址形式：
-1. **本地路径远程（Path Remote）**：形如 `../D1/.gitlet` 的本地文件系统目录，直接通过 `Store.open(remoteGitlet)` 打开远端 SQLite 会话并在单个事务内拷贝缺失的 Commit 与 Blob。
+1. **本地路径远程（Path Remote）**：形如 `../D1/.syncvault` 的本地文件系统目录，直接通过 `Store.open(remoteSyncvault)` 打开远端 SQLite 会话并在单个事务内拷贝缺失的 Commit 与 Blob。
 2. **Netty TCP / TLS 网络远程（Network Remote）**：形如 `host:port`、`netty://host:port`（明文 TCP）或 `nettys://host:port`（TLS 加密，由 `Repository.isNetworkRemote` 识别）。远端通过 `serve [port]`（默认端口 `9418`）启动 `NettyServer`，客户端 `push` / `fetch` / `pull` 通过 `NettyClient` 建立连接。
    - **传输帧与协议（`SyncMessage`）**：基于 Netty `LengthFieldBasedFrameDecoder` / `LengthFieldPrepender`（4 字节长度前缀）与 Java 序列化消息传输。
-   - **共享令牌鉴权（Token Auth）**：通过 `--token`、环境变量 `GITLET_SYNC_TOKEN` 或仓库文件 `.gitlet/sync-token`（优先级：`--token` > `GITLET_SYNC_TOKEN` > `.gitlet/sync-token`）配置令牌。服务端配置令牌后，要求客户端 `HELLO` 携带相同令牌（使用 `MessageDigest.isEqual` 常量时间比对），缺失或错误时返回 `ERROR("Authentication failed: invalid or missing sync token.")` 并拒绝后续 `PUSH_*` / `FETCH_*` 操作；未配置令牌时默认免密以保持向后兼容。本地目录远程不受令牌影响。
-   - **可选 TLS 加密**：服务端提供 `--tls-cert` + `--tls-key`（或 `GITLET_TLS_CERT` + `GITLET_TLS_KEY`）时在管线最前端挂载 `SslHandler`。客户端使用 `nettys://host:port` 或显式 TLS 参数时启用 `SslContext`，支持自定义受信任证书（`--tls-ca` / `GITLET_TLS_CA` / `.gitlet/tls-ca.pem`）或显式 `--tls-insecure`（`GITLET_TLS_INSECURE=true`）。
+   - **共享令牌鉴权（Token Auth）**：通过 `--token`、环境变量 `SYNCVAULT_SYNC_TOKEN` 或仓库文件 `.syncvault/sync-token`（优先级：`--token` > `SYNCVAULT_SYNC_TOKEN` > `.syncvault/sync-token`）配置令牌。服务端配置令牌后，要求客户端 `HELLO` 携带相同令牌（使用 `MessageDigest.isEqual` 常量时间比对），缺失或错误时返回 `ERROR("Authentication failed: invalid or missing sync token.")` 并拒绝后续 `PUSH_*` / `FETCH_*` 操作；未配置令牌时默认免密以保持向后兼容。本地目录远程不受令牌影响。
+   - **可选 TLS 加密**：服务端提供 `--tls-cert` + `--tls-key`（或 `SYNCVAULT_TLS_CERT` + `SYNCVAULT_TLS_KEY`）时在管线最前端挂载 `SslHandler`。客户端使用 `nettys://host:port` 或显式 TLS 参数时启用 `SslContext`，支持自定义受信任证书（`--tls-ca` / `SYNCVAULT_TLS_CA` / `.syncvault/tls-ca.pem`）或显式 `--tls-insecure`（`SYNCVAULT_TLS_INSECURE=true`）。
    - **Fetch 流程**：`HELLO` / `HELLO_OK` 握手后，客户端发送 `FETCH_REQ(branch)`；服务端返回 `FETCH_TIP(tip)`（若分支不存在则返回 `ERROR`，客户端打印 `That remote does not have that branch.`）；客户端发送本地已有的提交哈希集合 `FETCH_HAVE`，服务端通过 BFS 计算缺失的 Commit 序列化字节及关联 Blob 并以 `FETCH_OBJECTS` 返回；客户端在单一 SQLite 事务中写入对象并更新 `ref/<remote>/<branch>`，最后回复 `ACK`。
    - **Push 流程**：握手后客户端发送 `PUSH_REQ(branch, localTip)`；服务端返回远端当前分支头与已有提交集合 `PUSH_TIP`；客户端复用 BFS 校验远端分支头是否为本地分支头的祖先（否则打印 `Please pull down remote changes before pushing.`），收集缺失的 Commit 与 Blob 通过 `PUSH_OBJECTS` 发送；服务端在单一 SQLite 事务中写入对象并更新分支引用，回复 `ACK`。
 
@@ -83,7 +83,7 @@ merge 的八条规则还在 `Repository.merge` 里：当前和给定相同就保
 
 ## 可插拔哈希接口与 SHA-256
 
-为支持现代密码学安全标准与算法扩展，Gitlet 引入了可插拔的哈希策略接口 `HashFunction`：
+为支持现代密码学安全标准与算法扩展，SyncVault 引入了可插拔的哈希策略接口 `HashFunction`：
 
 1. **接口定义 (`HashFunction`)**：
    - `name()`：返回算法标识名称（如 `"SHA-1"`、`"SHA-256"`）。
@@ -102,11 +102,11 @@ merge 的八条规则还在 `Repository.merge` 里：当前和给定相同就保
 
 4. **为什么采用 SHA-256**：
    - **抗碰撞安全性**：SHA-1 算法已存在已知的实际碰撞攻击（如 SHAttered 攻击），无法保证长期的密码学完整性。SHA-256 提供 256 位安全强度，能够有效防御碰撞与原像攻击。
-   - **解耦与架构演进**：通过接口抽象使 Gitlet 的对象寻址机制与具体的哈希算法解耦，与真实 Git 社区向 SHA-256（Object Format）过渡的标准演进方向一致。
+   - **解耦与架构演进**：通过接口抽象使 SyncVault 的对象寻址机制与具体的哈希算法解耦，与真实 Git 社区向 SHA-256（Object Format）过渡的标准演进方向一致。
 
 ## SQLite storage
 
-为了提升存储可靠性、实现原子性事务保障并简化存储结构，SyncVault 将基于文件系统的逐文件存储模式替换为单文件内嵌 SQLite 数据库（`.gitlet/gitlet.db`）。初始化后，`.gitlet/` 目录下仅包含唯一的 `gitlet.db` 文件，且采用默认的 `DELETE` 日志模式（非 WAL），确保无额外附加文件（如 `-wal`、`-shm`）。
+为了提升存储可靠性、实现原子性事务保障并简化存储结构，SyncVault 将基于文件系统的逐文件存储模式替换为单文件内嵌 SQLite 数据库（`.syncvault/syncvault.db`）。初始化后，`.syncvault/` 目录下仅包含唯一的 `syncvault.db` 文件，且采用默认的 `DELETE` 日志模式（非 WAL），确保无额外附加文件（如 `-wal`、`-shm`）。
 
 ### 1. 数据库表结构 (Schema)
 
@@ -233,26 +233,26 @@ SyncVault 针对所有写操作定义了严密的事务边界，采用支持重�
 
 暂存新增存储在 `stage_add (name, hash)` 表，暂存删除存储在 `stage_rm (name)` 表。在 `add` 执行时，文件内容立即作为 blob 写入 `object` 表（类似 Git 的对象数据库设计，使用 `INSERT OR IGNORE` 去重）。
 - **理由**：
-  1. 避免在 `.gitlet/stage/` 与 `.gitlet/rm/` 中频繁创建/删除小文件与目录，消除了文件系统遍历与并发文件锁定的开销。
+  1. 避免在 `.syncvault/stage/` 与 `.syncvault/rm/` 中频繁创建/删除小文件与目录，消除了文件系统遍历与并发文件锁定的开销。
   2. 暂存区操作与提交/重置等操作可以通过数据库事务原子化处理，避免进程中断时留下孤立文件或不一致状态。
 
 ### 6. 为何选择 SQLite 而非 MySQL
 
 SyncVault 定位于多设备分布式资产同步与版本控制系统：
-1. **单文件零配置 (Embedded Single File)**：每个本地仓库只需一个 `.gitlet/gitlet.db` 文件，无需安装、配置与维护独立的数据库服务进程（daemon）。
+1. **单文件零配置 (Embedded Single File)**：每个本地仓库只需一个 `.syncvault/syncvault.db` 文件，无需安装、配置与维护独立的数据库服务进程（daemon）。
 2. **离线高可用 (Offline-First)**：版本控制要求每个节点在无网络连接、无中央服务端的情况下能够独立执行 init, add, commit, branch, merge, reset, log 等全部操作。
 3. **轻量与跨平台**：通过 `sqlite-jdbc` 跨平台驱动，SyncVault 可以直接打包为便携的单一可执行 Fat JAR，随处运行。
 4. **强 ACID 事务与可靠性**：SQLite 经过长期工业验证，提供完整的 ACID 事务与崩溃恢复能力，在进程异常退出时不会造成元数据损坏。
-5. **便捷备份与迁移**：复制或同步单个 `.gitlet/gitlet.db` 文件即可完成整个版本库元数据的迁移与备份。
+5. **便捷备份与迁移**：复制或同步单个 `.syncvault/syncvault.db` 文件即可完成整个版本库元数据的迁移与备份。
 
 ### 7. 提交 ID 与内容哈希保持不变
 
 - Commit ID 的计算机制完全保持不变：在 `self_hash` 字段为 `null` 时序列化该 Commit 对象，并计算其内容哈希（`Utils.hash(Utils.serialize(commit))`）。
-- Java 序列化字节里包含类的 `serialVersionUID`。为了让存储层访问提交信息，`Commit` 新增了 `getMessage()` / `getTimestamp()`，这会改变 Java 自动计算的 UID，从而改变所有 commit id。因此 `Commit` 显式固定 `serialVersionUID = -1296720244208386047L`（即迁移前类的自动计算值），初始提交的 id 仍是 `15fd3b34…dd01`，与文件存储版本逐字节一致（有单元测试 `CommitIdTest` 守护）。
+- Java 序列化字节里包含类的 `serialVersionUID`。为了让存储层访问提交信息，`Commit` 新增了 `getMessage()` / `getTimestamp()`，这会改变 Java 自动计算的 UID，从而改变所有 commit id。因此 `Commit` 显式固定 `serialVersionUID = -1296720244208386047L`，包名统一为 `syncvault` 后的初始提交 id 为 `860367ca…2198`（有单元测试 `CommitIdTest` 守护）。
 - Blob ID 依然严格等于文件原始字节的内容哈希（`Utils.hash(fileBytes)`）。
-- 对象寻址机制与历史数据兼容，保证了计算的纯粹性与可验证性。
+- 对象寻址机制保证了计算的纯粹性与可验证性。
 
 ### 8. 垃圾回收 (Garbage Collection, `gc`)
 
 - **可达性分析（Mark）**：以 `ref` 表中的所有分支与远程跟踪引用、当前 `HEAD`（通过分支解析或直接指向的游离提交）以及 `stage_add` 暂存区中的 Blob 哈希作为根集合（live roots）。对所有根提交执行 BFS，沿着父提交链（包含第一、第二父提交及 `commit_parent` 记录）遍历全部可达提交，并将每个可达提交快照（`nameToHash`）引用的 Blob 哈希加入可达集合。
-- **批量删除与空间回收（Sweep + VACUUM）**：在单个 SQLite 事务内，从 `object` 表中批量删除所有不可达的 `commit` 与 `blob` 对象，同时清理 `commit_meta` 和 `commit_parent` 中对应的孤立记录；事务提交后执行 `VACUUM` 重建数据库页，使 `.gitlet/gitlet.db` 文件体积在磁盘上实际收缩。
+- **批量删除与空间回收（Sweep + VACUUM）**：在单个 SQLite 事务内，从 `object` 表中批量删除所有不可达的 `commit` 与 `blob` 对象，同时清理 `commit_meta` 和 `commit_parent` 中对应的孤立记录；事务提交后执行 `VACUUM` 重建数据库页，使 `.syncvault/syncvault.db` 文件体积在磁盘上实际收缩。

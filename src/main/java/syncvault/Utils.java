@@ -1,4 +1,4 @@
-package gitlet;
+package syncvault;
 
 import java.io.BufferedOutputStream;
 import java.io.ByteArrayOutputStream;
@@ -92,10 +92,10 @@ class Utils {
     /** Deletes FILE if it exists and is not a directory.  Returns true
      *  if FILE was deleted, and false otherwise.  Refuses to delete FILE
      *  and throws IllegalArgumentException unless the directory designated by
-     *  FILE also contains a directory named .gitlet. */
+     *  FILE also contains a directory named .syncvault. */
     static boolean restrictedDelete(File file) {
-        if (!(new File(file.getParentFile(), ".gitlet")).isDirectory()) {
-            throw new IllegalArgumentException("not .gitlet working directory");
+        if (!(new File(file.getParentFile(), ".syncvault")).isDirectory()) {
+            throw new IllegalArgumentException("not .syncvault working directory");
         }
         if (!file.isDirectory()) {
             return file.delete();
@@ -107,7 +107,7 @@ class Utils {
     /** Deletes the file named FILE if it exists and is not a directory.
      *  Returns true if FILE was deleted, and false otherwise.  Refuses
      *  to delete FILE and throws IllegalArgumentException unless the
-     *  directory designated by FILE also contains a directory named .gitlet. */
+     *  directory designated by FILE also contains a directory named .syncvault. */
     static boolean restrictedDelete(String file) {
         return restrictedDelete(new File(file));
     }
@@ -248,10 +248,10 @@ class Utils {
 
     /* MESSAGES AND ERROR REPORTING */
 
-    /** Return a GitletException whose message is composed from MSG and ARGS as
+    /** Return a SyncVaultException whose message is composed from MSG and ARGS as
      *  for the String.format method. */
-    static GitletException error(String msg, Object... args) {
-        return new GitletException(String.format(msg, args));
+    static SyncVaultException error(String msg, Object... args) {
+        return new SyncVaultException(String.format(msg, args));
     }
 
     /** Print a message composed from MSG and ARGS as for the String.format

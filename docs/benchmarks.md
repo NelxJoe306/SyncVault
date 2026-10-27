@@ -12,7 +12,7 @@ This document records reproducible wall-clock measurements for core SyncVault op
 
 ## Measured Operations
 
-For each scale $N \in \{1000, 5000, 10000\}$, `gitlet.Benchmark` spawns a fresh worker process inside an isolated `/tmp/syncvault-bench-<N>-*` directory and measures:
+For each scale $N \in \{1000, 5000, 10000\}$, `syncvault.Benchmark` spawns a fresh worker process inside an isolated `/tmp/syncvault-bench-<N>-*` directory and measures:
 
 1. **$N$ Sequential Commits (`add` + `commit`)**:
    - Initializes a new repository (`init`) and creates an `early` branch at commit `#1`.

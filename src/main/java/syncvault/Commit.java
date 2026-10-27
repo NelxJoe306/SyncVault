@@ -1,4 +1,4 @@
-package gitlet;
+package syncvault;
 
 import java.io.File;
 import java.io.IOException;
@@ -6,11 +6,11 @@ import java.io.Serializable;
 import java.text.SimpleDateFormat;
 import java.util.*;
 
-import static gitlet.Blob.resetRemoval;
-import static gitlet.Blob.resetStage;
-import static gitlet.Repository.*;
+import static syncvault.Blob.resetRemoval;
+import static syncvault.Blob.resetStage;
+import static syncvault.Repository.*;
 
-/** Represents a gitlet commit object.
+/** Represents a syncvault commit object.
  *  It stores commit metadata including log message, timestamp, parent pointer(s),
  *  and a mapping of tracked filenames to blob SHA-1 hashes.
  *
@@ -83,7 +83,7 @@ public class Commit implements Serializable, Dumpable {
     }
 
     /**
-     * Creates the initial commit for gitlet initialization.
+     * Creates the initial commit for syncvault initialization.
      *
      * @return the SHA-1 hash of the initial commit
      */

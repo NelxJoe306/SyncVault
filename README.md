@@ -31,12 +31,12 @@ SyncVault 是一个轻量级的类似 Git 的版本控制系统（VCS）。本�
   - `push`：将本地分支推送到远程仓库（网络远程支持 `--token`、`--tls-ca`、`--tls-insecure`）。
   - `fetch`：从远程仓库拉取提交与分支历史（网络远程支持 `--token`、`--tls-ca`、`--tls-insecure`）。
   - `pull`：从远程拉取并合并至当前分支（网络远程支持 `--token`、`--tls-ca`、`--tls-insecure`）。
-  - `serve [port]`：启动基于 Netty 的 TCP 同步服务端（默认端口 `9418`），支持共享令牌鉴权（`--token` / `GITLET_SYNC_TOKEN` / `.gitlet/sync-token`）与可选 TLS 加密（`--tls-cert` + `--tls-key` / `GITLET_TLS_CERT` + `GITLET_TLS_KEY`）。
+  - `serve [port]`：启动基于 Netty 的 TCP 同步服务端（默认端口 `9418`），支持共享令牌鉴权（`--token` / `SYNCVAULT_SYNC_TOKEN` / `.syncvault/sync-token`）与可选 TLS 加密（`--tls-cert` + `--tls-key` / `SYNCVAULT_TLS_CERT` + `SYNCVAULT_TLS_KEY`）。
   - `web [port]`：启动本地 Web UI 与 JSON API 服务（默认端口 `8080`），提供基于 Vis.js (`vis-network`) 的交互式提交 DAG 图、提交详情检视、文件树 / Blob 原文预览，以及冲突文件的 Use Ours / Use Theirs 一键解决（`POST /api/resolve`，仅操作本机工作区）。
 - **可插拔哈希架构**：
   - 定义了 `HashFunction` 抽象接口，提供可插拔的哈希算法支持（已包含 SHA-256 与 SHA-1 实现）。
 - **SQLite 存储引擎**：
-  - 版本库全部元数据、提交、引用、暂存区及对象均存储于 `.gitlet/gitlet.db`（SQLite），提供 ACID 事务保证与单文件嵌入式存储，离线环境下无需运行任何外部数据库服务。
+  - 版本库全部元数据、提交、引用、暂存区及对象均存储于 `.syncvault/syncvault.db`（SQLite），提供 ACID 事务保证与单文件嵌入式存储，离线环境下无需运行任何外部数据库服务。
 
 ## 目录结构
 
@@ -46,15 +46,15 @@ SyncVault 是一个轻量级的类似 Git 的版本控制系统（VCS）。本�
 │   └── workflows/
 │       └── ci.yml                     # GitHub Actions CI 工作流
 ├── docs/
-│   └── design.md                      # Gitlet / SyncVault 设计与数据结构说明
+│   └── design.md                      # SyncVault 设计与数据结构说明
 ├── pom.xml                            # Maven 项目构建配置
 ├── README.md                          # 项目说明文档
 ├── scripts/
 │   └── run-integration-tests.sh       # 集成测试运行脚本
 ├── src/
-│   ├── main/java/gitlet/              # SyncVault 核心源码
+│   ├── main/java/syncvault/           # SyncVault 核心源码
 │   ├── main/resources/web/            # 本地 Web UI 静态资源 (HTML/CSS/JS)
-│   └── test/java/gitlet/              # JUnit 5 单元测试
+│   └── test/java/syncvault/           # JUnit 5 单元测试
 └── tests/
     └── integration/                   # 集成测试套件与测试用例
         ├── samples/                   # 基础功能集成测试
@@ -82,7 +82,7 @@ java -jar target/syncvault-0.1.0-SNAPSHOT.jar init
 
 也可以直接通过类路径运行：
 ```bash
-java -cp target/classes gitlet.Main init
+java -cp target/classes syncvault.Main init
 ```
 
 启动 Netty 远程同步服务端并从客户端关联同步：
@@ -95,23 +95,23 @@ java -jar target/syncvault-0.1.0-SNAPSHOT.jar add-remote origin localhost:9418
 java -jar target/syncvault-0.1.0-SNAPSHOT.jar push origin master
 ```
 
-配置共享令牌鉴权与 TLS 加密同步（优先级：命令行参数 `--token` > 环境变量 `GITLET_SYNC_TOKEN` > 仓库内文件 `.gitlet/sync-token`；本地目录远程无需令牌）：
+配置共享令牌鉴权与 TLS 加密同步（优先级：命令行参数 `--token` > 环境变量 `SYNCVAULT_SYNC_TOKEN` > 仓库内文件 `.syncvault/sync-token`；本地目录远程无需令牌）：
 ```bash
 # 方式 1：通过仓库文件或环境变量配置共享令牌 + TLS 服务端
-echo "my-shared-secret" > .gitlet/sync-token
+echo "my-shared-secret" > .syncvault/sync-token
 java -jar target/syncvault-0.1.0-SNAPSHOT.jar serve 9418 \
   --tls-cert=server-cert.pem --tls-key=server-key.pem
 
 # 也可通过环境变量指定：
-# GITLET_SYNC_TOKEN=my-shared-secret GITLET_TLS_CERT=server-cert.pem GITLET_TLS_KEY=server-key.pem \
+# SYNCVAULT_SYNC_TOKEN=my-shared-secret SYNCVAULT_TLS_CERT=server-cert.pem SYNCVAULT_TLS_KEY=server-key.pem \
 #   java -jar target/syncvault-0.1.0-SNAPSHOT.jar serve 9418
 
-# 客户端使用 nettys:// 协议连接，指定受信任 CA 证书（或放入 .gitlet/tls-ca.pem / 设置 GITLET_TLS_CA）
-echo "my-shared-secret" > .gitlet/sync-token
+# 客户端使用 nettys:// 协议连接，指定受信任 CA 证书（或放入 .syncvault/tls-ca.pem / 设置 SYNCVAULT_TLS_CA）
+echo "my-shared-secret" > .syncvault/sync-token
 java -jar target/syncvault-0.1.0-SNAPSHOT.jar add-remote origin nettys://localhost:9418
 java -jar target/syncvault-0.1.0-SNAPSHOT.jar push origin master --tls-ca=server-cert.pem
 
-# 开发测试自签名证书也可显式使用 --tls-insecure（或 GITLET_TLS_INSECURE=true）跳过证书链校验：
+# 开发测试自签名证书也可显式使用 --tls-insecure（或 SYNCVAULT_TLS_INSECURE=true）跳过证书链校验：
 java -jar target/syncvault-0.1.0-SNAPSHOT.jar fetch origin master --token=my-shared-secret --tls-insecure
 ```
 
@@ -156,4 +156,3 @@ java -jar target/syncvault-0.1.0-SNAPSHOT.jar bench 1000 5000 10000
 - [x] 冲突解决 UX (`resolve` CLI + Web Use Ours/Theirs)
 - [x] gc 垃圾回收
 - [x] Web UI (Vis.js 提交图)
-- [ ] 包名重命名 (gitlet -> io.github.nelxjoe306.syncvault)

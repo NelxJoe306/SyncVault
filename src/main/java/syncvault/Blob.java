@@ -1,12 +1,12 @@
-package gitlet;
+package syncvault;
 
 import java.io.File;
 import java.io.IOException;
 import java.io.Serializable;
 import java.util.TreeMap;
 
-import static gitlet.Repository.*;
-import static gitlet.Utils.join;
+import static syncvault.Repository.*;
+import static syncvault.Utils.join;
 
 public class Blob implements Serializable{
     /**

@@ -1,4 +1,4 @@
-package gitlet;
+package syncvault;
 
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
@@ -25,9 +25,9 @@ public class GcTest {
         Store.closeDefault();
     }
 
-    private String initRepo(File gitletDir) throws Exception {
-        gitletDir.mkdirs();
-        Store.useDir(gitletDir);
+    private String initRepo(File syncvaultDir) throws Exception {
+        syncvaultDir.mkdirs();
+        Store.useDir(syncvaultDir);
         Store.createSchema();
         String initId = Commit.first_commit();
         Store.setHead("master");
@@ -44,8 +44,8 @@ public class GcTest {
 
     @Test
     public void testGcRemovesUnreachableCommitsAndBlobsAndIsIdempotent(@TempDir Path tempDir) throws Exception {
-        File gitletDir = tempDir.resolve(".gitlet").toFile();
-        String c0 = initRepo(gitletDir);
+        File syncvaultDir = tempDir.resolve(".syncvault").toFile();
+        String c0 = initRepo(syncvaultDir);
 
         // Commit c1 on master with shared.txt and master.txt
         String sharedHash = putBlob("shared content across commits\n");
@@ -152,8 +152,8 @@ public class GcTest {
 
     @Test
     public void testGcPreservesSecondParentMergeAndRemoteRefsAndDetachedHead(@TempDir Path tempDir) throws Exception {
-        File gitletDir = tempDir.resolve(".gitlet").toFile();
-        String c0 = initRepo(gitletDir);
+        File syncvaultDir = tempDir.resolve(".syncvault").toFile();
+        String c0 = initRepo(syncvaultDir);
 
         // Create feature branch with commit cFeature
         Commit.branch("feature");
@@ -229,8 +229,8 @@ public class GcTest {
 
     @Test
     public void testGcShrinksDatabaseFileWithVacuumAndCleansOrphanMeta(@TempDir Path tempDir) throws Exception {
-        File gitletDir = tempDir.resolve(".gitlet").toFile();
-        initRepo(gitletDir);
+        File syncvaultDir = tempDir.resolve(".syncvault").toFile();
+        initRepo(syncvaultDir);
 
         // Insert multiple large unreachable blobs (~200 KB total) so SQLite allocates pages
         byte[] largePayload = new byte[64 * 1024];
@@ -259,7 +259,7 @@ public class GcTest {
         assertEquals(3, res.deletedBlobs());
         assertEquals(3L * 64 * 1024, res.reclaimedObjectBytes());
         assertTrue(res.dbBytesBefore() > res.dbBytesAfter(),
-                "Expected VACUUM to shrink gitlet.db: before=" + res.dbBytesBefore() + ", after=" + res.dbBytesAfter());
+                "Expected VACUUM to shrink syncvault.db: before=" + res.dbBytesBefore() + ", after=" + res.dbBytesAfter());
 
         // Dangling metadata rows must be cleaned up
         assertFalse(Store.allCommitIds().contains("dangling_commit"));

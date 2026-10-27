@@ -2,7 +2,7 @@ target/
 .idea/
 *.iml
 .vscode/
-.gitlet/
+.syncvault/
 *.class
 __pycache__/
 tests/integration/*_[0-9]/

@@ -1,4 +1,4 @@
-package gitlet;
+package syncvault;
 
 import java.io.ByteArrayInputStream;
 import java.io.File;
@@ -8,7 +8,7 @@ import java.sql.*;
 import java.util.*;
 
 /**
- * Embedded SQLite storage layer for Gitlet.
+ * Embedded SQLite storage layer for SyncVault.
  * Provides a static JDBC wrapper for the current repository and a Session
  * instance for opening remote or temporary databases.
  */
@@ -47,7 +47,7 @@ public class Store {
 
     public static synchronized Session getDefault() {
         if (defaultSession == null) {
-            defaultSession = open(Repository.GITLET_DIR);
+            defaultSession = open(Repository.SYNCVAULT_DIR);
         }
         return defaultSession;
     }
@@ -68,8 +68,8 @@ public class Store {
         defaultSession = open(dir);
     }
 
-    public static Session open(File gitletDir) {
-        File file = (gitletDir.getName().endsWith(".db")) ? gitletDir : new File(gitletDir, "gitlet.db");
+    public static Session open(File syncvaultDir) {
+        File file = (syncvaultDir.getName().endsWith(".db")) ? syncvaultDir : new File(syncvaultDir, "syncvault.db");
         return new Session(file);
     }
 
@@ -244,7 +244,7 @@ public class Store {
     }
 
     /**
-     * Session representing a connection to an individual Gitlet database.
+     * Session representing a connection to an individual SyncVault database.
      */
     public static class Session implements AutoCloseable {
 
@@ -275,7 +275,7 @@ public class Store {
                 }
                 return conn;
             } catch (SQLException e) {
-                throw new GitletException(e.getMessage());
+                throw new SyncVaultException(e.getMessage());
             }
         }
 
@@ -309,7 +309,7 @@ public class Store {
                     stmt.execute(sql);
                 }
             } catch (SQLException e) {
-                throw new GitletException(e.getMessage());
+                throw new SyncVaultException(e.getMessage());
             }
         }
 
@@ -320,7 +320,7 @@ public class Store {
                 pstmt.setBytes(2, bytes);
                 pstmt.executeUpdate();
             } catch (SQLException e) {
-                throw new GitletException(e.getMessage());
+                throw new SyncVaultException(e.getMessage());
             }
         }
 
@@ -335,7 +335,7 @@ public class Store {
                     return null;
                 }
             } catch (SQLException e) {
-                throw new GitletException(e.getMessage());
+                throw new SyncVaultException(e.getMessage());
             }
         }
 
@@ -347,7 +347,7 @@ public class Store {
                     return rs.next();
                 }
             } catch (SQLException e) {
-                throw new GitletException(e.getMessage());
+                throw new SyncVaultException(e.getMessage());
             }
         }
 
@@ -389,7 +389,7 @@ public class Store {
                     }
                 }
             } catch (SQLException e) {
-                throw new GitletException(e.getMessage());
+                throw new SyncVaultException(e.getMessage());
             }
         }
 
@@ -403,13 +403,13 @@ public class Store {
                         try (ObjectInputStream in = new ObjectInputStream(new ByteArrayInputStream(data))) {
                             return (Commit) in.readObject();
                         } catch (IOException | ClassNotFoundException e) {
-                            throw new GitletException(e.getMessage());
+                            throw new SyncVaultException(e.getMessage());
                         }
                     }
                     return null;
                 }
             } catch (SQLException e) {
-                throw new GitletException(e.getMessage());
+                throw new SyncVaultException(e.getMessage());
             }
         }
 
@@ -423,7 +423,7 @@ public class Store {
                 }
                 return list;
             } catch (SQLException e) {
-                throw new GitletException(e.getMessage());
+                throw new SyncVaultException(e.getMessage());
             }
         }
 
@@ -437,7 +437,7 @@ public class Store {
                 }
                 return list;
             } catch (SQLException e) {
-                throw new GitletException(e.getMessage());
+                throw new SyncVaultException(e.getMessage());
             }
         }
 
@@ -451,7 +451,7 @@ public class Store {
                 }
                 return list;
             } catch (SQLException e) {
-                throw new GitletException(e.getMessage());
+                throw new SyncVaultException(e.getMessage());
             }
         }
 
@@ -467,7 +467,7 @@ public class Store {
                     return list;
                 }
             } catch (SQLException e) {
-                throw new GitletException(e.getMessage());
+                throw new SyncVaultException(e.getMessage());
             }
         }
 
@@ -484,7 +484,7 @@ public class Store {
                     return list;
                 }
             } catch (SQLException e) {
-                throw new GitletException(e.getMessage());
+                throw new SyncVaultException(e.getMessage());
             }
         }
 
@@ -499,7 +499,7 @@ public class Store {
                     return null;
                 }
             } catch (SQLException e) {
-                throw new GitletException(e.getMessage());
+                throw new SyncVaultException(e.getMessage());
             }
         }
 
@@ -510,7 +510,7 @@ public class Store {
                 pstmt.setString(2, hash);
                 pstmt.executeUpdate();
             } catch (SQLException e) {
-                throw new GitletException(e.getMessage());
+                throw new SyncVaultException(e.getMessage());
             }
         }
 
@@ -520,7 +520,7 @@ public class Store {
                 pstmt.setString(1, name);
                 pstmt.executeUpdate();
             } catch (SQLException e) {
-                throw new GitletException(e.getMessage());
+                throw new SyncVaultException(e.getMessage());
             }
         }
 
@@ -534,7 +534,7 @@ public class Store {
                 }
                 return list;
             } catch (SQLException e) {
-                throw new GitletException(e.getMessage());
+                throw new SyncVaultException(e.getMessage());
             }
         }
 
@@ -548,7 +548,7 @@ public class Store {
                 }
                 return map;
             } catch (SQLException e) {
-                throw new GitletException(e.getMessage());
+                throw new SyncVaultException(e.getMessage());
             }
         }
 
@@ -561,7 +561,7 @@ public class Store {
                 }
                 return null;
             } catch (SQLException e) {
-                throw new GitletException(e.getMessage());
+                throw new SyncVaultException(e.getMessage());
             }
         }
 
@@ -571,7 +571,7 @@ public class Store {
                 pstmt.setString(1, branch);
                 pstmt.executeUpdate();
             } catch (SQLException e) {
-                throw new GitletException(e.getMessage());
+                throw new SyncVaultException(e.getMessage());
             }
         }
 
@@ -585,7 +585,7 @@ public class Store {
                 }
                 return map;
             } catch (SQLException e) {
-                throw new GitletException(e.getMessage());
+                throw new SyncVaultException(e.getMessage());
             }
         }
 
@@ -596,7 +596,7 @@ public class Store {
                 pstmt.setString(2, hash);
                 pstmt.executeUpdate();
             } catch (SQLException e) {
-                throw new GitletException(e.getMessage());
+                throw new SyncVaultException(e.getMessage());
             }
         }
 
@@ -606,7 +606,7 @@ public class Store {
                 pstmt.setString(1, name);
                 pstmt.executeUpdate();
             } catch (SQLException e) {
-                throw new GitletException(e.getMessage());
+                throw new SyncVaultException(e.getMessage());
             }
         }
 
@@ -620,7 +620,7 @@ public class Store {
                 }
                 return list;
             } catch (SQLException e) {
-                throw new GitletException(e.getMessage());
+                throw new SyncVaultException(e.getMessage());
             }
         }
 
@@ -630,7 +630,7 @@ public class Store {
                 pstmt.setString(1, name);
                 pstmt.executeUpdate();
             } catch (SQLException e) {
-                throw new GitletException(e.getMessage());
+                throw new SyncVaultException(e.getMessage());
             }
         }
 
@@ -640,7 +640,7 @@ public class Store {
                 pstmt.setString(1, name);
                 pstmt.executeUpdate();
             } catch (SQLException e) {
-                throw new GitletException(e.getMessage());
+                throw new SyncVaultException(e.getMessage());
             }
         }
 
@@ -648,7 +648,7 @@ public class Store {
             try (Statement stmt = getConnection().createStatement()) {
                 stmt.execute("DELETE FROM stage_add");
             } catch (SQLException e) {
-                throw new GitletException(e.getMessage());
+                throw new SyncVaultException(e.getMessage());
             }
         }
 
@@ -656,7 +656,7 @@ public class Store {
             try (Statement stmt = getConnection().createStatement()) {
                 stmt.execute("DELETE FROM stage_rm");
             } catch (SQLException e) {
-                throw new GitletException(e.getMessage());
+                throw new SyncVaultException(e.getMessage());
             }
         }
 
@@ -676,7 +676,7 @@ public class Store {
                     return null;
                 }
             } catch (SQLException e) {
-                throw new GitletException(e.getMessage());
+                throw new SyncVaultException(e.getMessage());
             }
         }
 
@@ -687,7 +687,7 @@ public class Store {
                 pstmt.setString(2, path);
                 pstmt.executeUpdate();
             } catch (SQLException e) {
-                throw new GitletException(e.getMessage());
+                throw new SyncVaultException(e.getMessage());
             }
         }
 
@@ -697,7 +697,7 @@ public class Store {
                 pstmt.setString(1, name);
                 pstmt.executeUpdate();
             } catch (SQLException e) {
-                throw new GitletException(e.getMessage());
+                throw new SyncVaultException(e.getMessage());
             }
         }
 
@@ -721,7 +721,7 @@ public class Store {
                     return map;
                 }
             } catch (SQLException e) {
-                throw new GitletException(e.getMessage());
+                throw new SyncVaultException(e.getMessage());
             }
         }
 
@@ -746,7 +746,7 @@ public class Store {
                     return list;
                 }
             } catch (SQLException e) {
-                throw new GitletException(e.getMessage());
+                throw new SyncVaultException(e.getMessage());
             }
         }
 
@@ -771,7 +771,7 @@ public class Store {
                     return null;
                 }
             } catch (SQLException e) {
-                throw new GitletException(e.getMessage());
+                throw new SyncVaultException(e.getMessage());
             }
         }
 
@@ -782,7 +782,7 @@ public class Store {
                 }
                 txDepth++;
             } catch (SQLException e) {
-                throw new GitletException(e.getMessage());
+                throw new SyncVaultException(e.getMessage());
             }
         }
 
@@ -799,7 +799,7 @@ public class Store {
                 } catch (SQLException ignored) {
                 }
                 txDepth = 0;
-                throw new GitletException(e.getMessage());
+                throw new SyncVaultException(e.getMessage());
             } finally {
                 if (txDepth > 0) {
                     txDepth--;
@@ -815,7 +815,7 @@ public class Store {
                     txDepth = 0;
                 }
             } catch (SQLException e) {
-                throw new GitletException(e.getMessage());
+                throw new SyncVaultException(e.getMessage());
             }
         }
 
@@ -831,7 +831,7 @@ public class Store {
                 } else if (t instanceof Error) {
                     throw (Error) t;
                 } else {
-                    throw new GitletException(t.getMessage());
+                    throw new SyncVaultException(t.getMessage());
                 }
             }
         }
@@ -846,7 +846,7 @@ public class Store {
                 }
                 return list;
             } catch (SQLException e) {
-                throw new GitletException(e.getMessage());
+                throw new SyncVaultException(e.getMessage());
             }
         }
 
@@ -860,7 +860,7 @@ public class Store {
                 }
                 return list;
             } catch (SQLException e) {
-                throw new GitletException(e.getMessage());
+                throw new SyncVaultException(e.getMessage());
             }
         }
 
@@ -895,7 +895,7 @@ public class Store {
             try (Statement stmt = getConnection().createStatement()) {
                 stmt.execute("VACUUM;");
             } catch (SQLException e) {
-                throw new GitletException(e.getMessage());
+                throw new SyncVaultException(e.getMessage());
             }
         }
 

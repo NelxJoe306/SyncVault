@@ -1,4 +1,4 @@
-package gitlet;
+package syncvault;
 
 import java.io.File;
 import java.io.IOException;
@@ -6,21 +6,21 @@ import java.nio.file.InvalidPathException;
 import java.nio.file.Path;
 import java.util.*;
 
-import static gitlet.Blob.resetRemoval;
-import static gitlet.Blob.resetStage;
-import static gitlet.Blob.saveToStage;
-import static gitlet.Commit.currCommitFiles_map;
-import static gitlet.Utils.*;
+import static syncvault.Blob.resetRemoval;
+import static syncvault.Blob.resetStage;
+import static syncvault.Blob.saveToStage;
+import static syncvault.Commit.currCommitFiles_map;
+import static syncvault.Utils.*;
 
-/** Represents a gitlet repository.
- *  It coordinates gitlet operations and manages repository files and directories,
+/** Represents a syncvault repository.
+ *  It coordinates syncvault operations and manages repository files and directories,
  *  including blobs, commits, staging, branches, and checkout/merge operations.
  *
  *  @author JOE
  */
 public class Repository {
     /**
-     * Directory paths and state variables for the Gitlet repository structure.
+     * Directory paths and state variables for the SyncVault repository structure.
      */
 
     /**
@@ -28,28 +28,28 @@ public class Repository {
      */
     public static final File CWD = new File(System.getProperty("user.dir"));
     /**
-     * The .gitlet directory.
+     * The .syncvault directory.
      */
-    public static final File GITLET_DIR = join(CWD, ".gitlet");
+    public static final File SYNCVAULT_DIR = join(CWD, ".syncvault");
     /**
      * The SQLite database file.
      */
-    public static final File DB_FILE = join(GITLET_DIR, "gitlet.db");
+    public static final File DB_FILE = join(SYNCVAULT_DIR, "syncvault.db");
     /**
      * The Head to point current commit
      */
     public static String currHead;
 
     /**
-     * initiate the .gitlet folder with a #initial commit
-     * if the .gitlet already exists then throw an error
+     * initiate the .syncvault folder with a #initial commit
+     * if the .syncvault already exists then throw an error
      */
     public static void init() throws IOException {
-        if (GITLET_DIR.exists()) {
-            message("A Gitlet version-control system already exists in the current directory.");
+        if (SYNCVAULT_DIR.exists()) {
+            message("A SyncVault version-control system already exists in the current directory.");
             System.exit(0);
         } else {
-            GITLET_DIR.mkdir();
+            SYNCVAULT_DIR.mkdir();
             Store.createSchema();
             currHead = Commit.first_commit();
             Store.setHead("master");
@@ -805,13 +805,13 @@ public class Repository {
     }
 
     /** Environment variable and file names for sync authentication and TLS. */
-    public static final String ENV_SYNC_TOKEN = "GITLET_SYNC_TOKEN";
+    public static final String ENV_SYNC_TOKEN = "SYNCVAULT_SYNC_TOKEN";
     public static final String SYNC_TOKEN_FILE = "sync-token";
-    public static final String ENV_TLS_CERT = "GITLET_TLS_CERT";
-    public static final String ENV_TLS_KEY = "GITLET_TLS_KEY";
-    public static final String ENV_TLS_CA = "GITLET_TLS_CA";
-    public static final String ENV_TLS_INSECURE = "GITLET_TLS_INSECURE";
-    public static final String ENV_TLS = "GITLET_TLS";
+    public static final String ENV_TLS_CERT = "SYNCVAULT_TLS_CERT";
+    public static final String ENV_TLS_KEY = "SYNCVAULT_TLS_KEY";
+    public static final String ENV_TLS_CA = "SYNCVAULT_TLS_CA";
+    public static final String ENV_TLS_INSECURE = "SYNCVAULT_TLS_INSECURE";
+    public static final String ENV_TLS = "SYNCVAULT_TLS";
     public static final String TLS_CA_FILE = "tls-ca.pem";
 
     /**
@@ -843,13 +843,13 @@ public class Repository {
             NettyClient.push(remotePath, branchName, localHead, token, tlsCaFile, tlsInsecure, forceTls);
             return;
         }
-        File remoteGitlet = new File(remotePath);
-        if (!remoteGitlet.exists() || !remoteGitlet.isDirectory()) {
+        File remoteSyncvault = new File(remotePath);
+        if (!remoteSyncvault.exists() || !remoteSyncvault.isDirectory()) {
             System.out.println("Remote directory not found.");
             System.exit(0);
         }
 
-        Store.Session remoteStore = Store.open(remoteGitlet);
+        Store.Session remoteStore = Store.open(remoteSyncvault);
         String remoteHead = remoteStore.getRef(branchName);
 
         if (remoteHead != null) {
@@ -909,7 +909,7 @@ public class Repository {
     }
 
     /**
-     * Brings down commits from the remote Gitlet repository into the local Gitlet repository.
+     * Brings down commits from the remote SyncVault repository into the local SyncVault repository.
      *
      * @param remoteName remote name
      * @param branchName remote branch name
@@ -934,13 +934,13 @@ public class Repository {
             NettyClient.fetch(remoteName, remotePath, branchName, token, tlsCaFile, tlsInsecure, forceTls);
             return;
         }
-        File remoteGitlet = new File(remotePath);
-        if (!remoteGitlet.exists() || !remoteGitlet.isDirectory()) {
+        File remoteSyncvault = new File(remotePath);
+        if (!remoteSyncvault.exists() || !remoteSyncvault.isDirectory()) {
             System.out.println("Remote directory not found.");
             System.exit(0);
         }
 
-        Store.Session remoteStore = Store.open(remoteGitlet);
+        Store.Session remoteStore = Store.open(remoteSyncvault);
         String remoteHead = remoteStore.getRef(branchName);
         if (remoteHead == null) {
             System.out.println("That remote does not have that branch.");
@@ -1051,13 +1051,13 @@ public class Repository {
         ensureRepoInitialized(session);
         String normalizedSide = Diff3.normalizeSide(side);
         if (fileName == null || fileName.isEmpty()) {
-            throw new GitletException("File does not exist.");
+            throw new SyncVaultException("File does not exist.");
         }
         Path rootPath = workDir.toPath().toAbsolutePath().normalize();
         Path targetPath = resolveSafeRepoPath(rootPath, fileName);
         File targetFile = targetPath.toFile();
         if (!targetFile.exists() || !targetFile.isFile()) {
-            throw new GitletException("File does not exist.");
+            throw new SyncVaultException("File does not exist.");
         }
         byte[] rawBytes = readContents(targetFile);
         byte[] resolvedBytes = Diff3.resolve(rawBytes, normalizedSide);
@@ -1112,7 +1112,7 @@ public class Repository {
             Path p;
             try {
                 p = resolveSafeRepoPath(rootPath, rel);
-            } catch (GitletException ignored) {
+            } catch (SyncVaultException ignored) {
                 continue;
             }
             File f = p.toFile();
@@ -1122,58 +1122,58 @@ public class Repository {
             }
         }
         if (resolvedFiles.isEmpty()) {
-            throw new GitletException("File has no conflict markers.");
+            throw new SyncVaultException("File has no conflict markers.");
         }
         return resolvedFiles;
     }
 
     static void ensureRepoInitialized(Store.Session session) {
-        File gitletDir = gitletDirForSession(session);
-        if (gitletDir == null || !gitletDir.exists() || !gitletDir.isDirectory()
+        File syncvaultDir = syncvaultDirForSession(session);
+        if (syncvaultDir == null || !syncvaultDir.exists() || !syncvaultDir.isDirectory()
                 || session == null || session.getDbFile() == null || !session.getDbFile().exists()) {
-            throw new GitletException("Not in an initialized Gitlet directory.");
+            throw new SyncVaultException("Not in an initialized SyncVault directory.");
         }
     }
 
-    static File gitletDirForSession(Store.Session session) {
+    static File syncvaultDirForSession(Store.Session session) {
         if (session == null || session.getDbFile() == null) {
-            return GITLET_DIR;
+            return SYNCVAULT_DIR;
         }
         File parent = session.getDbFile().getParentFile();
-        return (parent != null) ? parent : GITLET_DIR;
+        return (parent != null) ? parent : SYNCVAULT_DIR;
     }
 
     static File workDirForSession(Store.Session session) {
-        File gitletDir = gitletDirForSession(session);
-        if (".gitlet".equals(gitletDir.getName()) && gitletDir.getParentFile() != null) {
-            return gitletDir.getParentFile();
+        File syncvaultDir = syncvaultDirForSession(session);
+        if (".syncvault".equals(syncvaultDir.getName()) && syncvaultDir.getParentFile() != null) {
+            return syncvaultDir.getParentFile();
         }
-        return gitletDir;
+        return syncvaultDir;
     }
 
     static Path resolveSafeRepoPath(Path rootPath, String rawPath) {
         if (rawPath == null || rawPath.isBlank() || rawPath.indexOf('\0') >= 0) {
-            throw new GitletException("Invalid file path.");
+            throw new SyncVaultException("Invalid file path.");
         }
         String normalizedInput = rawPath.replace('\\', '/');
         for (String seg : normalizedInput.split("/")) {
-            if ("..".equals(seg) || ".gitlet".equals(seg)) {
-                throw new GitletException("Invalid file path.");
+            if ("..".equals(seg) || ".syncvault".equals(seg)) {
+                throw new SyncVaultException("Invalid file path.");
             }
         }
         try {
             Path rel = Path.of(normalizedInput);
             if (rel.isAbsolute()) {
-                throw new GitletException("Invalid file path.");
+                throw new SyncVaultException("Invalid file path.");
             }
             Path resolved = rootPath.resolve(rel).normalize();
             if (!resolved.startsWith(rootPath) || resolved.equals(rootPath)
-                    || resolved.startsWith(rootPath.resolve(".gitlet"))) {
-                throw new GitletException("Invalid file path.");
+                    || resolved.startsWith(rootPath.resolve(".syncvault"))) {
+                throw new SyncVaultException("Invalid file path.");
             }
             return resolved;
         } catch (InvalidPathException e) {
-            throw new GitletException("Invalid file path.");
+            throw new SyncVaultException("Invalid file path.");
         }
     }
 
@@ -1212,23 +1212,23 @@ public class Repository {
         return remotePath.matches("^(\\[[0-9a-fA-F:]+\\]|[A-Za-z0-9._-]+):\\d{1,5}$");
     }
 
-    public static String resolveSyncToken(File gitletDir) {
-        return resolveSyncToken(null, System.getenv(ENV_SYNC_TOKEN), gitletDir);
+    public static String resolveSyncToken(File syncvaultDir) {
+        return resolveSyncToken(null, System.getenv(ENV_SYNC_TOKEN), syncvaultDir);
     }
 
-    public static String resolveSyncToken(String explicitToken, File gitletDir) {
-        return resolveSyncToken(explicitToken, System.getenv(ENV_SYNC_TOKEN), gitletDir);
+    public static String resolveSyncToken(String explicitToken, File syncvaultDir) {
+        return resolveSyncToken(explicitToken, System.getenv(ENV_SYNC_TOKEN), syncvaultDir);
     }
 
-    static String resolveSyncToken(String explicitToken, String envToken, File gitletDir) {
+    static String resolveSyncToken(String explicitToken, String envToken, File syncvaultDir) {
         if (explicitToken != null && !explicitToken.trim().isEmpty()) {
             return explicitToken.trim();
         }
         if (envToken != null && !envToken.trim().isEmpty()) {
             return envToken.trim();
         }
-        if (gitletDir != null) {
-            File tokenFile = new File(gitletDir, SYNC_TOKEN_FILE);
+        if (syncvaultDir != null) {
+            File tokenFile = new File(syncvaultDir, SYNC_TOKEN_FILE);
             if (tokenFile.exists() && tokenFile.isFile()) {
                 String content = readContentsAsString(tokenFile).trim();
                 if (!content.isEmpty()) {

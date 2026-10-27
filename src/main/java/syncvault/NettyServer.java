@@ -1,4 +1,4 @@
-package gitlet;
+package syncvault;
 
 import io.netty.bootstrap.ServerBootstrap;
 import io.netty.channel.*;
@@ -18,7 +18,7 @@ import java.util.*;
 import java.util.concurrent.TimeUnit;
 
 /**
- * Netty TCP server exposing a Gitlet repository for push/fetch synchronization.
+ * Netty TCP server exposing a SyncVault repository for push/fetch synchronization.
  */
 public class NettyServer implements AutoCloseable {
 
@@ -42,12 +42,12 @@ public class NettyServer implements AutoCloseable {
         this(Store.getDefault().getDbFile(), port);
     }
 
-    public NettyServer(File gitletDir, int port) {
-        this(Store.open(gitletDir), port, true, null, null, null);
+    public NettyServer(File syncvaultDir, int port) {
+        this(Store.open(syncvaultDir), port, true, null, null, null);
     }
 
-    public NettyServer(File gitletDir, int port, String token, File tlsCertFile, File tlsKeyFile) {
-        this(Store.open(gitletDir), port, true, token, tlsCertFile, tlsKeyFile);
+    public NettyServer(File syncvaultDir, int port, String token, File tlsCertFile, File tlsKeyFile) {
+        this(Store.open(syncvaultDir), port, true, token, tlsCertFile, tlsKeyFile);
     }
 
     public NettyServer(Store.Session session, int port) {
@@ -73,23 +73,23 @@ public class NettyServer implements AutoCloseable {
             return null;
         }
         if (certFile == null || keyFile == null) {
-            throw new GitletException("TLS configuration error: both certificate and private key files are required.");
+            throw new SyncVaultException("TLS configuration error: both certificate and private key files are required.");
         }
         if (!certFile.exists() || !certFile.isFile()) {
-            throw new GitletException("TLS certificate file not found: " + certFile.getPath());
+            throw new SyncVaultException("TLS certificate file not found: " + certFile.getPath());
         }
         if (!keyFile.exists() || !keyFile.isFile()) {
-            throw new GitletException("TLS private key file not found: " + keyFile.getPath());
+            throw new SyncVaultException("TLS private key file not found: " + keyFile.getPath());
         }
         try {
             return SslContextBuilder.forServer(certFile, keyFile).build();
         } catch (Exception e) {
-            throw new GitletException("Failed to initialize server TLS context: " + e.getMessage());
+            throw new SyncVaultException("Failed to initialize server TLS context: " + e.getMessage());
         }
     }
 
     private String resolveExpectedToken() {
-        return Repository.resolveSyncToken(explicitToken, Repository.gitletDirForSession(session));
+        return Repository.resolveSyncToken(explicitToken, Repository.syncvaultDirForSession(session));
     }
 
     private SslContext resolveSslContext() {
@@ -140,7 +140,7 @@ public class NettyServer implements AutoCloseable {
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
             stop();
-            throw new GitletException(e.getMessage());
+            throw new SyncVaultException(e.getMessage());
         } catch (RuntimeException e) {
             stop();
             throw e;

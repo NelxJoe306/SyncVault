@@ -1,4 +1,4 @@
-package gitlet;
+package syncvault;
 
 import io.netty.bootstrap.Bootstrap;
 import io.netty.channel.*;
@@ -20,7 +20,7 @@ import java.util.concurrent.LinkedBlockingQueue;
 import java.util.concurrent.TimeUnit;
 
 /**
- * Netty TCP client for Gitlet push and fetch operations against a remote server.
+ * Netty TCP client for SyncVault push and fetch operations against a remote server.
  */
 public class NettyClient {
 
@@ -40,13 +40,13 @@ public class NettyClient {
                              boolean explicitTlsInsecure, boolean explicitTls) {
         HostPort hp = parseHostPort(remotePath);
         if (hp == null) {
-            throw new GitletException("Could not connect to remote.");
+            throw new SyncVaultException("Could not connect to remote.");
         }
 
-        File gitletDir = Repository.gitletDirForSession(Store.getDefault());
-        String token = Repository.resolveSyncToken(explicitToken, gitletDir);
+        File syncvaultDir = Repository.syncvaultDirForSession(Store.getDefault());
+        String token = Repository.resolveSyncToken(explicitToken, syncvaultDir);
         SslContext sslContext = resolveClientSslContext(
-                hp, explicitTlsCa, explicitTlsInsecure, explicitTls, gitletDir);
+                hp, explicitTlsCa, explicitTlsInsecure, explicitTls, syncvaultDir);
 
         EventLoopGroup group = new NioEventLoopGroup(1);
         Channel ch = null;
@@ -122,7 +122,7 @@ public class NettyClient {
             }
             group.shutdownGracefully(0, 1, TimeUnit.SECONDS).syncUninterruptibly();
             if (exitMessage != null) {
-                throw new GitletException(exitMessage);
+                throw new SyncVaultException(exitMessage);
             }
         }
     }
@@ -141,13 +141,13 @@ public class NettyClient {
                             boolean explicitTlsInsecure, boolean explicitTls) {
         HostPort hp = parseHostPort(remotePath);
         if (hp == null) {
-            throw new GitletException("Could not connect to remote.");
+            throw new SyncVaultException("Could not connect to remote.");
         }
 
-        File gitletDir = Repository.gitletDirForSession(Store.getDefault());
-        String token = Repository.resolveSyncToken(explicitToken, gitletDir);
+        File syncvaultDir = Repository.syncvaultDirForSession(Store.getDefault());
+        String token = Repository.resolveSyncToken(explicitToken, syncvaultDir);
         SslContext sslContext = resolveClientSslContext(
-                hp, explicitTlsCa, explicitTlsInsecure, explicitTls, gitletDir);
+                hp, explicitTlsCa, explicitTlsInsecure, explicitTls, syncvaultDir);
 
         EventLoopGroup group = new NioEventLoopGroup(1);
         Channel ch = null;
@@ -237,7 +237,7 @@ public class NettyClient {
             }
             group.shutdownGracefully(0, 1, TimeUnit.SECONDS).syncUninterruptibly();
             if (exitMessage != null) {
-                throw new GitletException(exitMessage);
+                throw new SyncVaultException(exitMessage);
             }
         }
     }
@@ -305,14 +305,14 @@ public class NettyClient {
 
     static SslContext resolveClientSslContext(HostPort hp, File explicitTlsCa,
                                               boolean explicitTlsInsecure, boolean explicitTls,
-                                              File gitletDir) {
+                                              File syncvaultDir) {
         File caFile = (explicitTlsCa != null) ? explicitTlsCa : Repository.envFile(Repository.ENV_TLS_CA);
         boolean insecure = explicitTlsInsecure || Repository.envBool(Repository.ENV_TLS_INSECURE);
         boolean forceTls = explicitTls || Repository.envBool(Repository.ENV_TLS);
         boolean useTls = hp.tls || forceTls || insecure || (caFile != null);
 
-        if (useTls && caFile == null && !insecure && gitletDir != null) {
-            File localCa = new File(gitletDir, Repository.TLS_CA_FILE);
+        if (useTls && caFile == null && !insecure && syncvaultDir != null) {
+            File localCa = new File(syncvaultDir, Repository.TLS_CA_FILE);
             if (localCa.exists() && localCa.isFile()) {
                 caFile = localCa;
             }
@@ -325,7 +325,7 @@ public class NettyClient {
             return null;
         }
         if (caFile != null && (!caFile.exists() || !caFile.isFile())) {
-            throw new GitletException("TLS CA certificate file not found: " + caFile.getPath());
+            throw new SyncVaultException("TLS CA certificate file not found: " + caFile.getPath());
         }
         try {
             SslContextBuilder builder = SslContextBuilder.forClient();
@@ -342,7 +342,7 @@ public class NettyClient {
             }
             return builder.build();
         } catch (Exception e) {
-            throw new GitletException("Failed to initialize client TLS context: " + e.getMessage());
+            throw new SyncVaultException("Failed to initialize client TLS context: " + e.getMessage());
         }
     }
 

@@ -1,4 +1,4 @@
-package gitlet;
+package syncvault;
 
 import java.io.Serializable;
 

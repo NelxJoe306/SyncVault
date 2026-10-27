@@ -109,8 +109,10 @@ public class Main {
             String autoRecover = System.getenv("SYNCVAULT_AUTO_RECOVER");
             if ("continue".equalsIgnoreCase(autoRecover)) {
                 WorkspaceJournal.continueOp();
+                System.exit(0);
             } else if ("abort".equalsIgnoreCase(autoRecover)) {
                 WorkspaceJournal.abort();
+                System.exit(0);
             } else {
                 System.out.println("An interrupted workspace update was detected. Run 'syncvault abort' or 'syncvault continue'.");
                 System.exit(0);

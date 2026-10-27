@@ -1115,6 +1115,36 @@ public class Store {
                 }
             }
 
+            if (errors == null && WorkspaceJournal.hasPending()) {
+                try {
+                    File jf = WorkspaceJournal.getJournalFile();
+                    if (jf != null && jf.exists() && jf.length() > 0) {
+                        WorkspaceJournal.JournalRecord rec = WorkspaceJournal.readJournal(jf);
+                        if (rec.targetCommit != null && !rec.targetCommit.isEmpty()) {
+                            commitQueue.add(rec.targetCommit);
+                        }
+                        if (rec.oldCommit != null && !rec.oldCommit.isEmpty()) {
+                            commitQueue.add(rec.oldCommit);
+                        }
+                        if (rec.filesToWrite != null) {
+                            for (String blobHash : rec.filesToWrite.values()) {
+                                if (blobHash != null && !blobHash.isEmpty()) {
+                                    reachableBlobs.add(blobHash);
+                                }
+                            }
+                        }
+                        if (rec.oldFiles != null) {
+                            for (String blobHash : rec.oldFiles.values()) {
+                                if (blobHash != null && !blobHash.isEmpty()) {
+                                    reachableBlobs.add(blobHash);
+                                }
+                            }
+                        }
+                    }
+                } catch (Exception ignored) {
+                }
+            }
+
             Map<String, List<String>> parentEdges = new HashMap<>();
             for (CommitParent cp : allCommitParents()) {
                 parentEdges.computeIfAbsent(cp.child(), k -> new ArrayList<>()).add(cp.parent());

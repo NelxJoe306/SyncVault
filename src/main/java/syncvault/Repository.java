@@ -549,182 +549,186 @@ public class Repository {
      * @param branch the given branch
      */
     public static void merge(String branch) throws IOException {
-        // 1. Check uncommitted changes
-        TreeMap<String, String> stageFiles = Store.stagedAdditions();
-        boolean hasStagedAdditions = !stageFiles.isEmpty();
-        List<String> removedFiles = Store.stagedRemovals();
-        boolean hasStagedRemovals = removedFiles != null && !removedFiles.isEmpty();
-        if (hasStagedAdditions || hasStagedRemovals) {
-            System.out.println("You have uncommitted changes.");
-            System.exit(0);
-        }
+        try (RepoLock lock = Store.acquireLock()) {
+            // 1. Check uncommitted changes
+            TreeMap<String, String> stageFiles = Store.stagedAdditions();
+            boolean hasStagedAdditions = !stageFiles.isEmpty();
+            List<String> removedFiles = Store.stagedRemovals();
+            boolean hasStagedRemovals = removedFiles != null && !removedFiles.isEmpty();
+            if (hasStagedAdditions || hasStagedRemovals) {
+                System.out.println("You have uncommitted changes.");
+                System.exit(0);
+            }
 
-        // 2. Check branch existence
-        String branch_head_hash = Store.getRef(branch);
-        String curr_Head = Store.getHead();
-        if (branch_head_hash == null) {
-            System.out.println("A branch with that name does not exist.");
-            System.exit(0);
-        }
+            // 2. Check branch existence
+            String branch_head_hash = Store.getRef(branch);
+            String curr_Head = Store.getHead();
+            if (branch_head_hash == null) {
+                System.out.println("A branch with that name does not exist.");
+                System.exit(0);
+            }
 
-        // 3. Check merging with self
-        if (curr_Head.equals(branch)) {
-            System.out.println("Cannot merge a branch with itself.");
-            System.exit(0);
-        }
+            // 3. Check merging with self
+            if (curr_Head.equals(branch)) {
+                System.out.println("Cannot merge a branch with itself.");
+                System.exit(0);
+            }
 
-        String current_head_hash = Store.getRef(curr_Head);
+            String current_head_hash = Store.getRef(curr_Head);
 
-        // 4. Find split point
-        String split_id = find_latest_ances_id(current_head_hash, branch_head_hash);
-        Commit splitCommit = (split_id != null) ? Store.getCommit(split_id) : null;
+            // 4. Find split point
+            String split_id = find_latest_ances_id(current_head_hash, branch_head_hash);
+            Commit splitCommit = (split_id != null) ? Store.getCommit(split_id) : null;
 
-        Commit currCommit = Store.getCommit(current_head_hash);
-        Commit givenCommit = Store.getCommit(branch_head_hash);
+            Commit currCommit = Store.getCommit(current_head_hash);
+            Commit givenCommit = Store.getCommit(branch_head_hash);
 
-        TreeMap<String, String> splitMap = (splitCommit != null) ? splitCommit.getNameToHash() : new TreeMap<>();
-        TreeMap<String, String> currMap = currCommit.getNameToHash();
-        TreeMap<String, String> givenMap = givenCommit.getNameToHash();
+            TreeMap<String, String> splitMap = (splitCommit != null) ? splitCommit.getNameToHash() : new TreeMap<>();
+            TreeMap<String, String> currMap = currCommit.getNameToHash();
+            TreeMap<String, String> givenMap = givenCommit.getNameToHash();
 
-        List<String> cwdFiles = plainFilenamesIn(getCwd());
-        if (cwdFiles == null) {
-            cwdFiles = new ArrayList<>();
-        }
-        Set<String> stagedAdd = stageFiles.keySet();
+            List<String> cwdFiles = plainFilenamesIn(getCwd());
+            if (cwdFiles == null) {
+                cwdFiles = new ArrayList<>();
+            }
+            Set<String> stagedAdd = stageFiles.keySet();
 
-        // 5. Special exits
-        if (split_id != null && split_id.equals(branch_head_hash)) {
-            System.out.println("Given branch is an ancestor of the current branch.");
-            return;
-        }
+            // 5. Special exits
+            if (split_id != null && split_id.equals(branch_head_hash)) {
+                System.out.println("Given branch is an ancestor of the current branch.");
+                return;
+            }
 
-        if (split_id != null && split_id.equals(current_head_hash)) {
+            if (split_id != null && split_id.equals(current_head_hash)) {
+                for (String file : cwdFiles) {
+                    if (!currMap.containsKey(file) && !stagedAdd.contains(file) && givenMap.containsKey(file)) {
+                        System.out.println("There is an untracked file in the way; delete it, or add and commit it first.");
+                        System.exit(0);
+                    }
+                }
+                reset(branch_head_hash);
+                System.out.println("Current branch fast-forwarded.");
+                return;
+            }
+
+            // 6. Check untracked files
+            Set<String> allFiles = new TreeSet<>();
+            allFiles.addAll(splitMap.keySet());
+            allFiles.addAll(currMap.keySet());
+            allFiles.addAll(givenMap.keySet());
+
             for (String file : cwdFiles) {
-                if (!currMap.containsKey(file) && !stagedAdd.contains(file) && givenMap.containsKey(file)) {
-                    System.out.println("There is an untracked file in the way; delete it, or add and commit it first.");
-                    System.exit(0);
+                boolean isUntracked = !currMap.containsKey(file) && !stagedAdd.contains(file);
+                if (isUntracked) {
+                    String sHash = splitMap.get(file);
+                    String cHash = currMap.get(file);
+                    String gHash = givenMap.get(file);
+                    if (wouldBeOverwrittenOrDeleted(sHash, cHash, gHash)) {
+                        System.out.println("There is an untracked file in the way; delete it, or add and commit it first.");
+                        System.exit(0);
+                    }
                 }
             }
-            reset(branch_head_hash);
-            System.out.println("Current branch fast-forwarded.");
-            return;
-        }
 
-        // 6. Check untracked files
-        Set<String> allFiles = new TreeSet<>();
-        allFiles.addAll(splitMap.keySet());
-        allFiles.addAll(currMap.keySet());
-        allFiles.addAll(givenMap.keySet());
+            // 7. Apply 8 rules
+            TreeMap<String, String> newCommitMap = new TreeMap<>(currMap);
+            Map<String, byte[]> conflictBlobs = new LinkedHashMap<>();
+            boolean hasConflict = false;
 
-        for (String file : cwdFiles) {
-            boolean isUntracked = !currMap.containsKey(file) && !stagedAdd.contains(file);
-            if (isUntracked) {
+            for (String file : allFiles) {
                 String sHash = splitMap.get(file);
                 String cHash = currMap.get(file);
                 String gHash = givenMap.get(file);
-                if (wouldBeOverwrittenOrDeleted(sHash, cHash, gHash)) {
-                    System.out.println("There is an untracked file in the way; delete it, or add and commit it first.");
-                    System.exit(0);
-                }
-            }
-        }
 
-        // 7. Apply 8 rules
-        TreeMap<String, String> newCommitMap = new TreeMap<>(currMap);
-        boolean hasConflict = false;
-
-        for (String file : allFiles) {
-            String sHash = splitMap.get(file);
-            String cHash = currMap.get(file);
-            String gHash = givenMap.get(file);
-
-            if (sHash != null) {
-                // In split point
-                if (Objects.equals(sHash, cHash)) {
-                    if (gHash != null && !Objects.equals(sHash, gHash)) {
-                        // Rule 1: modified in given, not modified in curr
-                        newCommitMap.put(file, gHash);
-                    } else if (gHash == null) {
-                        // Rule 6: absent in given, unmodified in curr
-                        newCommitMap.remove(file);
+                if (sHash != null) {
+                    // In split point
+                    if (Objects.equals(sHash, cHash)) {
+                        if (gHash != null && !Objects.equals(sHash, gHash)) {
+                            // Rule 1: modified in given, not modified in curr
+                            newCommitMap.put(file, gHash);
+                        } else if (gHash == null) {
+                            // Rule 6: absent in given, unmodified in curr
+                            newCommitMap.remove(file);
+                        }
+                        // if sHash == gHash: unmodified in both, do nothing
+                    } else if (Objects.equals(sHash, gHash)) {
+                        // Rule 2 & 7: unmodified in given
+                        // If cHash != null, stays as current (already in newCommitMap)
+                        // If cHash == null, remains absent (already not in newCommitMap)
+                    } else {
+                        // Modified in both
+                        if (Objects.equals(cHash, gHash)) {
+                            // Rule 3: modified same way or both deleted
+                        } else {
+                            // Rule 8: 3-way line merge / conflict
+                            byte[] sContent = Store.getBlob(sHash);
+                            byte[] cContent = (cHash != null) ? Store.getBlob(cHash) : new byte[0];
+                            byte[] gContent = (gHash != null) ? Store.getBlob(gHash) : new byte[0];
+                            Diff3.Result mergeResult = Diff3.merge(sContent, cContent, gContent);
+                            if (mergeResult.hasConflict()) {
+                                hasConflict = true;
+                            }
+                            byte[] mergedContent = mergeResult.content();
+                            String mergedBlobHash = Utils.hash(mergedContent);
+                            conflictBlobs.put(mergedBlobHash, mergedContent);
+                            newCommitMap.put(file, mergedBlobHash);
+                        }
                     }
-                    // if sHash == gHash: unmodified in both, do nothing
-                } else if (Objects.equals(sHash, gHash)) {
-                    // Rule 2 & 7: unmodified in given
-                    // If cHash != null, stays as current (already in newCommitMap)
-                    // If cHash == null, remains absent (already not in newCommitMap)
                 } else {
-                    // Modified in both
-                    if (Objects.equals(cHash, gHash)) {
-                        // Rule 3: modified same way or both deleted
-                    } else {
-                        // Rule 8: 3-way line merge / conflict
-                        byte[] sContent = Store.getBlob(sHash);
-                        byte[] cContent = (cHash != null) ? Store.getBlob(cHash) : new byte[0];
-                        byte[] gContent = (gHash != null) ? Store.getBlob(gHash) : new byte[0];
-                        Diff3.Result mergeResult = Diff3.merge(sContent, cContent, gContent);
-                        if (mergeResult.hasConflict()) {
-                            hasConflict = true;
+                    // Not in split point
+                    if (cHash != null && gHash == null) {
+                        // Rule 4: present only in curr -> stays as is
+                    } else if (cHash == null && gHash != null) {
+                        // Rule 5: present only in given -> checkout & stage
+                        newCommitMap.put(file, gHash);
+                    } else if (cHash != null && gHash != null) {
+                        if (Objects.equals(cHash, gHash)) {
+                            // Rule 3: both added same way
+                        } else {
+                            // Rule 8: 3-way line merge / conflict (empty base)
+                            byte[] cContent = Store.getBlob(cHash);
+                            byte[] gContent = Store.getBlob(gHash);
+                            Diff3.Result mergeResult = Diff3.merge(new byte[0], cContent, gContent);
+                            if (mergeResult.hasConflict()) {
+                                hasConflict = true;
+                            }
+                            byte[] mergedContent = mergeResult.content();
+                            String mergedBlobHash = Utils.hash(mergedContent);
+                            conflictBlobs.put(mergedBlobHash, mergedContent);
+                            newCommitMap.put(file, mergedBlobHash);
                         }
-                        byte[] mergedContent = mergeResult.content();
-                        String mergedBlobHash = Utils.hash(mergedContent);
-                        Store.putBlob(mergedBlobHash, mergedContent);
-                        newCommitMap.put(file, mergedBlobHash);
-                    }
-                }
-            } else {
-                // Not in split point
-                if (cHash != null && gHash == null) {
-                    // Rule 4: present only in curr -> stays as is
-                } else if (cHash == null && gHash != null) {
-                    // Rule 5: present only in given -> checkout & stage
-                    newCommitMap.put(file, gHash);
-                } else if (cHash != null && gHash != null) {
-                    if (Objects.equals(cHash, gHash)) {
-                        // Rule 3: both added same way
-                    } else {
-                        // Rule 8: 3-way line merge / conflict (empty base)
-                        byte[] cContent = Store.getBlob(cHash);
-                        byte[] gContent = Store.getBlob(gHash);
-                        Diff3.Result mergeResult = Diff3.merge(new byte[0], cContent, gContent);
-                        if (mergeResult.hasConflict()) {
-                            hasConflict = true;
-                        }
-                        byte[] mergedContent = mergeResult.content();
-                        String mergedBlobHash = Utils.hash(mergedContent);
-                        Store.putBlob(mergedBlobHash, mergedContent);
-                        newCommitMap.put(file, mergedBlobHash);
                     }
                 }
             }
-        }
 
-        // 8. Check if anything changed
-        if (newCommitMap.equals(currMap)) {
-            System.out.println("No changes added to the commit.");
-            System.exit(0);
-        }
+            // 8. Check if anything changed
+            if (newCommitMap.equals(currMap)) {
+                System.out.println("No changes added to the commit.");
+                System.exit(0);
+            }
 
-        // 9. Create merge commit
-        String commitMessage = "Merged " + branch + " into " + curr_Head + ".";
-        Commit mergeCommit = new Commit(commitMessage, newCommitMap, current_head_hash, branch_head_hash);
-        mergeCommit.setSelfHash(mergeCommit.contentId());
+            // 9. Create merge commit
+            String commitMessage = "Merged " + branch + " into " + curr_Head + ".";
+            Commit mergeCommit = new Commit(commitMessage, newCommitMap, current_head_hash, branch_head_hash);
+            mergeCommit.setSelfHash(mergeCommit.contentId());
 
-        Store.putCommit(mergeCommit);
+            String newHead = mergeCommit.getSelfHash();
+            WorkspaceJournal.updateWorkspace(
+                    "merge",
+                    curr_Head,
+                    current_head_hash,
+                    curr_Head,
+                    newHead,
+                    newCommitMap,
+                    currMap,
+                    conflictBlobs,
+                    mergeCommit,
+                    null
+            );
 
-        String newHead = mergeCommit.getSelfHash();
-        WorkspaceJournal.updateWorkspace(
-                "merge",
-                curr_Head,
-                current_head_hash,
-                curr_Head,
-                newHead,
-                newCommitMap,
-                currMap
-        );
-
-        if (hasConflict) {
-            System.out.println("Encountered a merge conflict.");
+            if (hasConflict) {
+                System.out.println("Encountered a merge conflict.");
+            }
         }
     }
 

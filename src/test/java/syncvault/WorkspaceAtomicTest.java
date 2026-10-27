@@ -480,4 +480,162 @@ public class WorkspaceAtomicTest {
             System.setOut(origOut);
         }
     }
+
+    @Test
+    public void testInterruptAfterDbCommitAbortDoesNotUndoSuccessState(@TempDir Path tempDir) throws Exception {
+        File syncvaultDir = tempDir.resolve(".syncvault").toFile();
+        initRepo(syncvaultDir);
+
+        commitFile("base.txt", "v1\n", "base commit");
+        Commit.branch("feature");
+        Repository.check_branch("feature");
+        commitFile("feature.txt", "feature data\n", "feature commit");
+        Repository.check_branch("master");
+
+        WorkspaceJournal.testInterruptHook = point -> {
+            if ("after-db-commit".equals(point)) {
+                throw new RuntimeException("Simulated crash right after DB commit before journal cleanup");
+            }
+        };
+
+        RuntimeException ex = assertThrows(RuntimeException.class, () -> Repository.check_branch("feature"));
+        assertEquals("Simulated crash right after DB commit before journal cleanup", ex.getMessage());
+
+        assertTrue(WorkspaceJournal.hasPending(), "Journal should be pending when interrupted at after-db-commit");
+
+        WorkspaceJournal.testInterruptHook = null;
+        WorkspaceJournal.abort();
+
+        assertFalse(WorkspaceJournal.hasPending(), "Journal must be cleaned up after abort");
+        assertEquals("feature", Store.getHead(), "abort after successful DB commit must NOT undo branch switch");
+        assertTrue(new File(Repository.getCwd(), "feature.txt").exists(), "feature.txt must still exist");
+    }
+
+    @Test
+    public void testInterruptAfterDbCommitContinueLeavesSuccessState(@TempDir Path tempDir) throws Exception {
+        File syncvaultDir = tempDir.resolve(".syncvault").toFile();
+        initRepo(syncvaultDir);
+
+        commitFile("base.txt", "v1\n", "base commit");
+        Commit.branch("feature");
+        Repository.check_branch("feature");
+        commitFile("feature.txt", "feature data\n", "feature commit");
+        Repository.check_branch("master");
+
+        WorkspaceJournal.testInterruptHook = point -> {
+            if ("after-db-commit".equals(point)) {
+                throw new RuntimeException("Simulated crash right after DB commit before journal cleanup");
+            }
+        };
+
+        RuntimeException ex = assertThrows(RuntimeException.class, () -> Repository.check_branch("feature"));
+        assertEquals("Simulated crash right after DB commit before journal cleanup", ex.getMessage());
+
+        assertTrue(WorkspaceJournal.hasPending(), "Journal should be pending when interrupted at after-db-commit");
+
+        WorkspaceJournal.testInterruptHook = null;
+        WorkspaceJournal.continueOp();
+
+        assertFalse(WorkspaceJournal.hasPending(), "Journal must be cleaned up after continue");
+        assertEquals("feature", Store.getHead(), "continue after successful DB commit must leave target branch");
+        assertTrue(new File(Repository.getCwd(), "feature.txt").exists(), "feature.txt must still exist");
+    }
+
+    @Test
+    public void testMergeGcRaceAndPendingRecovery(@TempDir Path tempDir) throws Exception {
+        File syncvaultDir = tempDir.resolve(".syncvault").toFile();
+        initRepo(syncvaultDir);
+
+        commitFile("common.txt", "line1\nline2\n", "base commit");
+        Commit.branch("other");
+        commitFile("common.txt", "master line\nline2\n", "master commit");
+        String masterTip = Repository.currHead;
+
+        Repository.check_branch("other");
+        commitFile("common.txt", "other line\nline2\n", "other commit");
+
+        Repository.check_branch("master");
+
+        // Interrupt merge during conflict resolution after worktree applied
+        WorkspaceJournal.testInterruptHook = point -> {
+            if ("after-worktree-applied".equals(point)) {
+                throw new RuntimeException("Simulated crash during merge conflict apply");
+            }
+        };
+
+        assertThrows(RuntimeException.class, () -> Repository.merge("other"));
+        assertTrue(WorkspaceJournal.hasPending());
+
+        // Concurrent GC with 0 grace period runs while operation is pending
+        Store.getDefault().gc(0L);
+
+        // Continue must successfully complete the merge without missing blobs
+        WorkspaceJournal.testInterruptHook = null;
+        WorkspaceJournal.continueOp();
+
+        assertFalse(WorkspaceJournal.hasPending(), "Journal must be cleared after continue");
+        assertNotEquals(masterTip, Store.getRef("master"), "master must be updated to merge commit");
+
+        String content = Utils.readContentsAsString(new File(Repository.getCwd(), "common.txt"));
+        assertTrue(content.contains("<<<<<<< HEAD"), "Conflict markers must be present");
+        assertTrue(content.contains("master line"));
+        assertTrue(content.contains("other line"));
+    }
+
+    @Test
+    public void testMergeInterruptedBeforeDbCommitAbortLeavesNoOrphan(@TempDir Path tempDir) throws Exception {
+        File syncvaultDir = tempDir.resolve(".syncvault").toFile();
+        initRepo(syncvaultDir);
+
+        commitFile("base.txt", "base data\n", "base commit");
+        Commit.branch("b1");
+        commitFile("file1.txt", "data 1\n", "commit 1");
+        String masterTip = Repository.currHead;
+
+        Repository.check_branch("b1");
+        commitFile("file2.txt", "data 2\n", "commit 2");
+
+        Repository.check_branch("master");
+
+        WorkspaceJournal.testInterruptHook = point -> {
+            if ("after-worktree-applied".equals(point)) {
+                throw new RuntimeException("Simulated crash during merge");
+            }
+        };
+
+        assertThrows(RuntimeException.class, () -> Repository.merge("b1"));
+        assertTrue(WorkspaceJournal.hasPending());
+
+        WorkspaceJournal.testInterruptHook = null;
+        WorkspaceJournal.abort();
+
+        assertFalse(WorkspaceJournal.hasPending());
+        assertEquals(masterTip, Store.getRef("master"), "master should remain at pre-merge commit");
+
+        // GC with 0 grace period: should find 0 unreachable commits because mergeCommit was never inserted
+        Store.GcResult gcRes = Store.getDefault().gc(0L);
+        assertEquals(0, gcRes.deletedCommits(), "No orphan merge commit should have been left behind");
+    }
+
+    @Test
+    public void testCheckoutOverwritesDirtyFileWhenHashMatches(@TempDir Path tempDir) throws Exception {
+        File syncvaultDir = tempDir.resolve(".syncvault").toFile();
+        initRepo(syncvaultDir);
+
+        commitFile("shared.txt", "clean content\n", "base commit");
+        Commit.branch("feature");
+        Repository.check_branch("feature");
+        commitFile("feature_only.txt", "feat\n", "feat commit");
+        Repository.check_branch("master");
+
+        // Dirty the tracked shared.txt on disk without committing
+        File diskFile = new File(Repository.getCwd(), "shared.txt");
+        Utils.writeContents(diskFile, "dirty modified content\n".getBytes(StandardCharsets.UTF_8));
+
+        // Checkout feature: targetHash == currHash, but on-disk content differs. Must overwrite from blob!
+        Repository.check_branch("feature");
+
+        assertEquals("clean content\n", Utils.readContentsAsString(diskFile),
+                "checkout must overwrite dirty file from blob even when targetHash equals currHash");
+    }
 }

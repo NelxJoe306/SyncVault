@@ -1,4 +1,4 @@
-package gitlet;
+package syncvault;
 
 import java.io.File;
 import java.io.IOException;
@@ -87,7 +87,7 @@ public class Benchmark {
             ProcessBuilder pb = new ProcessBuilder(
                     javaBin,
                     "-cp", absCp.toString(),
-                    "gitlet.Benchmark",
+                    "syncvault.Benchmark",
                     "--worker",
                     String.valueOf(n),
                     String.valueOf(withNetty)
@@ -167,16 +167,16 @@ public class Benchmark {
         if (withNetty) {
             Path remoteDir = Files.createTempDirectory(Path.of("/tmp"), "syncvault-bench-remote-" + n + "-");
             try {
-                File remoteGitlet = remoteDir.resolve(".gitlet").toFile();
-                remoteGitlet.mkdirs();
-                try (Store.Session remoteSession = Store.open(remoteGitlet)) {
+                File remoteSyncvault = remoteDir.resolve(".syncvault").toFile();
+                remoteSyncvault.mkdirs();
+                try (Store.Session remoteSession = Store.open(remoteSyncvault)) {
                     remoteSession.createSchema();
                     Commit initCommit = Store.getCommit(initialCommitHash);
                     remoteSession.putCommit(initCommit);
                     remoteSession.setRef("master", initialCommitHash);
                     remoteSession.setHead("master");
                 }
-                try (NettyServer server = new NettyServer(remoteGitlet, 0).start()) {
+                try (NettyServer server = new NettyServer(remoteSyncvault, 0).start()) {
                     Repository.add_remote("origin", "127.0.0.1:" + server.getPort());
                     long tPushStart = System.nanoTime();
                     Repository.push("origin", "master");

@@ -1,4 +1,4 @@
-package gitlet;
+package syncvault;
 
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
@@ -300,14 +300,14 @@ public class Diff3Test {
 
     @Test
     public void testResolveThrowsWhenNoConflictMarkersOrInvalidSide() {
-        GitletException noMarkerEx = assertThrows(
-                GitletException.class,
+        SyncVaultException noMarkerEx = assertThrows(
+                SyncVaultException.class,
                 () -> Diff3.resolve("clean line 1\nclean line 2\n", "--ours")
         );
         assertEquals("File has no conflict markers.", noMarkerEx.getMessage());
 
-        GitletException badSideEx = assertThrows(
-                GitletException.class,
+        SyncVaultException badSideEx = assertThrows(
+                SyncVaultException.class,
                 () -> Diff3.resolve("<<<<<<< HEAD\na\n=======\nb\n>>>>>>>\n", "--invalid")
         );
         assertEquals("Incorrect operands.", badSideEx.getMessage());
@@ -315,35 +315,35 @@ public class Diff3Test {
 
     @Test
     public void testRepositoryResolveWritesAndStagesWorkingTreeFile(@TempDir Path tempDir) throws Exception {
-        File gitletDir = tempDir.resolve(".gitlet").toFile();
-        Store.useDir(gitletDir);
+        File syncvaultDir = tempDir.resolve(".syncvault").toFile();
+        Store.useDir(syncvaultDir);
 
         // 1. Not initialized repo error
         Path notesPath = tempDir.resolve("notes.txt");
         Files.writeString(notesPath, "<<<<<<< HEAD\nours\n=======\ntheirs\n>>>>>>>\n", StandardCharsets.UTF_8);
-        GitletException notInitEx = assertThrows(
-                GitletException.class,
+        SyncVaultException notInitEx = assertThrows(
+                SyncVaultException.class,
                 () -> Repository.resolve("notes.txt", "--ours")
         );
-        assertEquals("Not in an initialized Gitlet directory.", notInitEx.getMessage());
+        assertEquals("Not in an initialized SyncVault directory.", notInitEx.getMessage());
 
         // Initialize repo in tempDir
-        gitletDir.mkdirs();
+        syncvaultDir.mkdirs();
         Store.createSchema();
         String c0 = Commit.first_commit();
         Store.setHead("master");
         Repository.currHead = c0;
 
         // 2. Missing file error
-        GitletException missingEx = assertThrows(
-                GitletException.class,
+        SyncVaultException missingEx = assertThrows(
+                SyncVaultException.class,
                 () -> Repository.resolve("missing.txt", "--ours")
         );
         assertEquals("File does not exist.", missingEx.getMessage());
 
         // 3. Path traversal error
-        GitletException escapeEx = assertThrows(
-                GitletException.class,
+        SyncVaultException escapeEx = assertThrows(
+                SyncVaultException.class,
                 () -> Repository.resolve("../outside.txt", "--ours")
         );
         assertEquals("Invalid file path.", escapeEx.getMessage());
@@ -374,9 +374,9 @@ public class Diff3Test {
         assertEquals(expectedOursHash, Store.stagedAdditions().get("notes.txt"));
         assertArrayEquals(expectedOurs.getBytes(StandardCharsets.UTF_8), Store.getBlob(expectedOursHash));
 
-        // 5. Resolving an already-resolved (no-marker) file throws GitletException
-        GitletException alreadyCleanEx = assertThrows(
-                GitletException.class,
+        // 5. Resolving an already-resolved (no-marker) file throws SyncVaultException
+        SyncVaultException alreadyCleanEx = assertThrows(
+                SyncVaultException.class,
                 () -> Repository.resolve("notes.txt", "--theirs")
         );
         assertEquals("File has no conflict markers.", alreadyCleanEx.getMessage());

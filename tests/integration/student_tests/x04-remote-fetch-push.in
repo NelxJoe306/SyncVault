@@ -23,7 +23,7 @@ D R1_INIT "${2}"
 C D2
 > init
 <<<
-> add-remote R1 ../D1/.gitlet
+> add-remote R1 ../D1/.syncvault
 <<<
 > fetch R1 master
 <<<

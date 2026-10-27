@@ -1,4 +1,4 @@
-package gitlet;
+package syncvault;
 
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
@@ -32,9 +32,9 @@ public class WebServerTest {
 
     @Test
     public void testWebServerStaticAndApiEndpoints(@TempDir Path tempDir) throws Exception {
-        File gitletDir = tempDir.resolve(".gitlet").toFile();
-        gitletDir.mkdirs();
-        Store.useDir(gitletDir);
+        File syncvaultDir = tempDir.resolve(".syncvault").toFile();
+        syncvaultDir.mkdirs();
+        Store.useDir(syncvaultDir);
         Store.createSchema();
 
         String c0 = Commit.first_commit();
@@ -187,9 +187,9 @@ public class WebServerTest {
 
     @Test
     public void testConflictCommitAndBlobMetadata(@TempDir Path tempDir) throws Exception {
-        File gitletDir = tempDir.resolve(".gitlet").toFile();
-        gitletDir.mkdirs();
-        Store.useDir(gitletDir);
+        File syncvaultDir = tempDir.resolve(".syncvault").toFile();
+        syncvaultDir.mkdirs();
+        Store.useDir(syncvaultDir);
         Store.createSchema();
 
         String c0 = Commit.first_commit();
@@ -273,9 +273,9 @@ public class WebServerTest {
 
     @Test
     public void testPostResolveHappyPathAndBadPaths(@TempDir Path tempDir) throws Exception {
-        File gitletDir = tempDir.resolve(".gitlet").toFile();
-        gitletDir.mkdirs();
-        Store.useDir(gitletDir);
+        File syncvaultDir = tempDir.resolve(".syncvault").toFile();
+        syncvaultDir.mkdirs();
+        Store.useDir(syncvaultDir);
         Store.createSchema();
 
         String c0 = Commit.first_commit();

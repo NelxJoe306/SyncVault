@@ -1,4 +1,4 @@
-package gitlet;
+package syncvault;
 
 import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.AfterEach;
@@ -111,9 +111,9 @@ public class NettySyncTest {
         Store.closeDefault();
     }
 
-    private String initRepo(File gitletDir) throws Exception {
-        gitletDir.mkdirs();
-        Store.useDir(gitletDir);
+    private String initRepo(File syncvaultDir) throws Exception {
+        syncvaultDir.mkdirs();
+        Store.useDir(syncvaultDir);
         Store.createSchema();
         String initId = Commit.first_commit();
         Store.setHead("master");
@@ -123,8 +123,8 @@ public class NettySyncTest {
 
     @Test
     public void testPushOverNetty(@TempDir Path tempDir) throws Exception {
-        File serverDir = tempDir.resolve("server/.gitlet").toFile();
-        File clientDir = tempDir.resolve("client/.gitlet").toFile();
+        File serverDir = tempDir.resolve("server/.syncvault").toFile();
+        File clientDir = tempDir.resolve("client/.syncvault").toFile();
 
         initRepo(serverDir);
         server = Repository.serve(0);
@@ -156,8 +156,8 @@ public class NettySyncTest {
 
     @Test
     public void testFetchOverNetty(@TempDir Path tempDir) throws Exception {
-        File serverDir = tempDir.resolve("server/.gitlet").toFile();
-        File clientDir = tempDir.resolve("client/.gitlet").toFile();
+        File serverDir = tempDir.resolve("server/.syncvault").toFile();
+        File clientDir = tempDir.resolve("client/.syncvault").toFile();
 
         initRepo(serverDir);
         byte[] data = "synced from server".getBytes(StandardCharsets.UTF_8);
@@ -186,9 +186,9 @@ public class NettySyncTest {
         assertTrue(Repository.isNetworkRemote("localhost:9418"));
         assertTrue(Repository.isNetworkRemote("netty://localhost:9418"));
         assertTrue(Repository.isNetworkRemote("nettys://localhost:9418"));
-        assertFalse(Repository.isNetworkRemote("../D1/.gitlet"));
-        assertFalse(Repository.isNetworkRemote("/tmp/repo/.gitlet"));
-        assertFalse(Repository.isNetworkRemote("C:\\Users\\test\\.gitlet"));
+        assertFalse(Repository.isNetworkRemote("../D1/.syncvault"));
+        assertFalse(Repository.isNetworkRemote("/tmp/repo/.syncvault"));
+        assertFalse(Repository.isNetworkRemote("C:\\Users\\test\\.syncvault"));
 
         NettyClient.HostPort plain = NettyClient.parseHostPort("netty://127.0.0.1:9418");
         assertNotNull(plain);
@@ -205,11 +205,11 @@ public class NettySyncTest {
 
     @Test
     public void testTokenAuthRejectsMissingAndWrongTokenAndAcceptsMatchingToken(@TempDir Path tempDir) throws Exception {
-        File serverDir = tempDir.resolve("server/.gitlet").toFile();
-        File clientDir = tempDir.resolve("client/.gitlet").toFile();
+        File serverDir = tempDir.resolve("server/.syncvault").toFile();
+        File clientDir = tempDir.resolve("client/.syncvault").toFile();
 
         String serverInitId = initRepo(serverDir);
-        // Configure server token via repo-local .gitlet/sync-token file
+        // Configure server token via repo-local .syncvault/sync-token file
         Files.writeString(serverDir.toPath().resolve(Repository.SYNC_TOKEN_FILE),
                 "vault-shared-secret-2026\n", StandardCharsets.UTF_8);
 
@@ -226,14 +226,14 @@ public class NettySyncTest {
         String clientCommitId = Commit.commitInCurrBran("add secret.txt");
 
         // 1. Missing token -> rejected on both push and fetch
-        GitletException missingPushEx = assertThrows(
-                GitletException.class,
+        SyncVaultException missingPushEx = assertThrows(
+                SyncVaultException.class,
                 () -> Repository.push("origin", "master")
         );
         assertEquals(NettyServer.AUTH_FAILED_MESSAGE, missingPushEx.getMessage());
 
-        GitletException missingFetchEx = assertThrows(
-                GitletException.class,
+        SyncVaultException missingFetchEx = assertThrows(
+                SyncVaultException.class,
                 () -> Repository.fetch("origin", "master")
         );
         assertEquals(NettyServer.AUTH_FAILED_MESSAGE, missingFetchEx.getMessage());
@@ -244,11 +244,11 @@ public class NettySyncTest {
             assertFalse(serverStore.hasObject(clientCommitId));
         }
 
-        // 2. Wrong token in client .gitlet/sync-token -> rejected
+        // 2. Wrong token in client .syncvault/sync-token -> rejected
         Files.writeString(clientDir.toPath().resolve(Repository.SYNC_TOKEN_FILE),
                 "wrong-token\n", StandardCharsets.UTF_8);
-        GitletException wrongPushEx = assertThrows(
-                GitletException.class,
+        SyncVaultException wrongPushEx = assertThrows(
+                SyncVaultException.class,
                 () -> Repository.push("origin", "master")
         );
         assertEquals(NettyServer.AUTH_FAILED_MESSAGE, wrongPushEx.getMessage());
@@ -258,7 +258,7 @@ public class NettySyncTest {
             assertFalse(serverStore.hasObject(clientCommitId));
         }
 
-        // 3. Matching token in client .gitlet/sync-token -> push and fetch succeed
+        // 3. Matching token in client .syncvault/sync-token -> push and fetch succeed
         Files.writeString(clientDir.toPath().resolve(Repository.SYNC_TOKEN_FILE),
                 "vault-shared-secret-2026\n", StandardCharsets.UTF_8);
         Repository.push("origin", "master");
@@ -274,28 +274,28 @@ public class NettySyncTest {
 
     @Test
     public void testTokenResolutionPrecedence(@TempDir Path tempDir) throws Exception {
-        File gitletDir = tempDir.resolve(".gitlet").toFile();
-        gitletDir.mkdirs();
+        File syncvaultDir = tempDir.resolve(".syncvault").toFile();
+        syncvaultDir.mkdirs();
 
         // None configured -> null
-        assertNull(Repository.resolveSyncToken(null, null, gitletDir));
+        assertNull(Repository.resolveSyncToken(null, null, syncvaultDir));
 
         // File configured -> file value (trimmed)
-        Files.writeString(gitletDir.toPath().resolve(Repository.SYNC_TOKEN_FILE),
+        Files.writeString(syncvaultDir.toPath().resolve(Repository.SYNC_TOKEN_FILE),
                 "  file-token-123 \n", StandardCharsets.UTF_8);
-        assertEquals("file-token-123", Repository.resolveSyncToken(null, null, gitletDir));
+        assertEquals("file-token-123", Repository.resolveSyncToken(null, null, syncvaultDir));
 
         // Env wins over file
-        assertEquals("env-token-456", Repository.resolveSyncToken(null, " env-token-456 ", gitletDir));
+        assertEquals("env-token-456", Repository.resolveSyncToken(null, " env-token-456 ", syncvaultDir));
 
         // Explicit CLI flag wins over env and file
-        assertEquals("cli-token-789", Repository.resolveSyncToken("cli-token-789", "env-token-456", gitletDir));
+        assertEquals("cli-token-789", Repository.resolveSyncToken("cli-token-789", "env-token-456", syncvaultDir));
     }
 
     @Test
     public void testPathRemoteUntouchedWhenSyncTokenSet(@TempDir Path tempDir) throws Exception {
-        File remoteDir = tempDir.resolve("remote/.gitlet").toFile();
-        File clientDir = tempDir.resolve("client/.gitlet").toFile();
+        File remoteDir = tempDir.resolve("remote/.syncvault").toFile();
+        File clientDir = tempDir.resolve("client/.syncvault").toFile();
 
         initRepo(remoteDir);
         Files.writeString(remoteDir.toPath().resolve(Repository.SYNC_TOKEN_FILE),
@@ -318,8 +318,8 @@ public class NettySyncTest {
 
     @Test
     public void testTlsPushAndFetchWithTrustedCaAndToken(@TempDir Path tempDir) throws Exception {
-        File serverDir = tempDir.resolve("server/.gitlet").toFile();
-        File clientDir = tempDir.resolve("client/.gitlet").toFile();
+        File serverDir = tempDir.resolve("server/.syncvault").toFile();
+        File clientDir = tempDir.resolve("client/.syncvault").toFile();
 
         initRepo(serverDir);
         server = Repository.serve(0, "tls-token-abc", serverCertFile, serverKeyFile);
@@ -336,8 +336,8 @@ public class NettySyncTest {
         String commitId = Commit.commitInCurrBran("tls commit");
 
         // Wrong token over valid TLS still fails with auth error
-        GitletException badTokenEx = assertThrows(
-                GitletException.class,
+        SyncVaultException badTokenEx = assertThrows(
+                SyncVaultException.class,
                 () -> Repository.push("origin", "master", "wrong-token", serverCertFile, false)
         );
         assertEquals(NettyServer.AUTH_FAILED_MESSAGE, badTokenEx.getMessage());
@@ -347,7 +347,7 @@ public class NettySyncTest {
         Repository.fetch("origin", "master", "tls-token-abc", serverCertFile, false);
         assertEquals(commitId, Store.getRef("origin/master"));
 
-        // Repo-local .gitlet/tls-ca.pem + .gitlet/sync-token also work without explicit arguments
+        // Repo-local .syncvault/tls-ca.pem + .syncvault/sync-token also work without explicit arguments
         Files.copy(serverCertFile.toPath(), clientDir.toPath().resolve(Repository.TLS_CA_FILE));
         Files.writeString(clientDir.toPath().resolve(Repository.SYNC_TOKEN_FILE),
                 "tls-token-abc\n", StandardCharsets.UTF_8);
@@ -362,8 +362,8 @@ public class NettySyncTest {
 
     @Test
     public void testTlsPushAndFetchWithInsecureTrustManager(@TempDir Path tempDir) throws Exception {
-        File serverDir = tempDir.resolve("server/.gitlet").toFile();
-        File clientDir = tempDir.resolve("client/.gitlet").toFile();
+        File serverDir = tempDir.resolve("server/.syncvault").toFile();
+        File clientDir = tempDir.resolve("client/.syncvault").toFile();
 
         initRepo(serverDir);
         server = Repository.serve(0, null, serverCertFile, serverKeyFile);
@@ -385,8 +385,8 @@ public class NettySyncTest {
 
     @Test
     public void testTlsHandshakeFailsWithUntrustedOrWrongCa(@TempDir Path tempDir) throws Exception {
-        File serverDir = tempDir.resolve("server/.gitlet").toFile();
-        File clientDir = tempDir.resolve("client/.gitlet").toFile();
+        File serverDir = tempDir.resolve("server/.syncvault").toFile();
+        File clientDir = tempDir.resolve("client/.syncvault").toFile();
 
         initRepo(serverDir);
         server = Repository.serve(0, null, serverCertFile, serverKeyFile);
@@ -396,16 +396,16 @@ public class NettySyncTest {
         Repository.add_remote("origin", "nettys://localhost:" + port);
 
         // 1. Default system trust store rejects self-signed server cert
-        GitletException defaultTrustEx = assertThrows(
-                GitletException.class,
+        SyncVaultException defaultTrustEx = assertThrows(
+                SyncVaultException.class,
                 () -> Repository.fetch("origin", "master")
         );
         assertTrue(defaultTrustEx.getMessage().startsWith("TLS handshake failed:"),
                 "Expected TLS handshake failure but got: " + defaultTrustEx.getMessage());
 
         // 2. Wrong CA cert rejects server cert
-        GitletException wrongCaEx = assertThrows(
-                GitletException.class,
+        SyncVaultException wrongCaEx = assertThrows(
+                SyncVaultException.class,
                 () -> Repository.fetch("origin", "master", null, otherCaCertFile, false)
         );
         assertTrue(wrongCaEx.getMessage().startsWith("TLS handshake failed:"),
@@ -414,35 +414,35 @@ public class NettySyncTest {
 
     @Test
     public void testMissingTlsCertKeyAndCaFilesProduceClearErrors(@TempDir Path tempDir) throws Exception {
-        File serverDir = tempDir.resolve("server/.gitlet").toFile();
+        File serverDir = tempDir.resolve("server/.syncvault").toFile();
         initRepo(serverDir);
 
         File missingFile = tempDir.resolve("nonexistent.pem").toFile();
 
         // Missing key when cert is provided
-        GitletException onlyCertEx = assertThrows(
-                GitletException.class,
+        SyncVaultException onlyCertEx = assertThrows(
+                SyncVaultException.class,
                 () -> Repository.serve(0, null, serverCertFile, null)
         );
         assertTrue(onlyCertEx.getMessage().contains("both certificate and private key"));
 
         // Nonexistent cert file
-        GitletException missingCertEx = assertThrows(
-                GitletException.class,
+        SyncVaultException missingCertEx = assertThrows(
+                SyncVaultException.class,
                 () -> Repository.serve(0, null, missingFile, serverKeyFile)
         );
         assertTrue(missingCertEx.getMessage().startsWith("TLS certificate file not found:"));
 
         // Nonexistent key file
-        GitletException missingKeyEx = assertThrows(
-                GitletException.class,
+        SyncVaultException missingKeyEx = assertThrows(
+                SyncVaultException.class,
                 () -> Repository.serve(0, null, serverCertFile, missingFile)
         );
         assertTrue(missingKeyEx.getMessage().startsWith("TLS private key file not found:"));
 
         // Nonexistent client CA file
-        GitletException missingCaEx = assertThrows(
-                GitletException.class,
+        SyncVaultException missingCaEx = assertThrows(
+                SyncVaultException.class,
                 () -> NettyClient.buildClientSslContext(true, missingFile, false)
         );
         assertTrue(missingCaEx.getMessage().startsWith("TLS CA certificate file not found:"));
@@ -461,8 +461,8 @@ public class NettySyncTest {
         CertKeyPair evil = generateSelfSignedPem(
                 tempDir, "evil", "CN=evil.example", "dns:evil.example");
 
-        File serverDir = tempDir.resolve("server/.gitlet").toFile();
-        File clientDir = tempDir.resolve("client/.gitlet").toFile();
+        File serverDir = tempDir.resolve("server/.syncvault").toFile();
+        File clientDir = tempDir.resolve("client/.syncvault").toFile();
         String serverInitId = initRepo(serverDir);
         server = Repository.serve(0, null, evil.certFile(), evil.keyFile());
         int port = server.getPort();
@@ -470,8 +470,8 @@ public class NettySyncTest {
         initRepo(clientDir);
         Repository.add_remote("origin", "nettys://localhost:" + port);
 
-        GitletException mismatch = assertThrows(
-                GitletException.class,
+        SyncVaultException mismatch = assertThrows(
+                SyncVaultException.class,
                 () -> Repository.fetch("origin", "master", null, evil.certFile(), false)
         );
         assertTrue(mismatch.getMessage().startsWith("TLS handshake failed:"),

@@ -1,4 +1,4 @@
-package gitlet;
+package syncvault;
 
 import io.netty.buffer.ByteBuf;
 import io.netty.channel.ChannelHandlerContext;
@@ -111,7 +111,7 @@ public class SyncMessage implements Serializable {
         try (ObjectInputStream in = new ObjectInputStream(new ByteArrayInputStream(data))) {
             return (Commit) in.readObject();
         } catch (IOException | ClassNotFoundException e) {
-            throw new GitletException(e.getMessage());
+            throw new SyncVaultException(e.getMessage());
         }
     }
 

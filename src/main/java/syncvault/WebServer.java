@@ -1,4 +1,4 @@
-package gitlet;
+package syncvault;
 
 import com.sun.net.httpserver.HttpExchange;
 import com.sun.net.httpserver.HttpServer;
@@ -38,8 +38,8 @@ public class WebServer implements AutoCloseable {
         this(Store.getDefault().getDbFile(), port);
     }
 
-    public WebServer(File gitletDir, int port) {
-        this(Store.open(gitletDir), port, true);
+    public WebServer(File syncvaultDir, int port) {
+        this(Store.open(syncvaultDir), port, true);
     }
 
     public WebServer(Store.Session session, int port) {
@@ -67,7 +67,7 @@ public class WebServer implements AutoCloseable {
             return this;
         } catch (IOException e) {
             stop();
-            throw new GitletException(e.getMessage());
+            throw new SyncVaultException(e.getMessage());
         } catch (RuntimeException e) {
             stop();
             throw e;
@@ -501,7 +501,7 @@ public class WebServer implements AutoCloseable {
                 response.put("staged", session.stagedAdditions().containsKey(relPath));
             }
             sendJson(exchange, 200, response);
-        } catch (GitletException e) {
+        } catch (SyncVaultException e) {
             String msg = e.getMessage() != null ? e.getMessage() : "Invalid file path.";
             int status = "File does not exist.".equals(msg) ? 404 : 400;
             sendJson(exchange, status, Map.of("error", msg));
@@ -546,7 +546,7 @@ public class WebServer implements AutoCloseable {
                 response.put("worktree", true);
             }
             sendJson(exchange, 200, response);
-        } catch (GitletException e) {
+        } catch (SyncVaultException e) {
             String msg = e.getMessage() != null ? e.getMessage() : "Resolve failed.";
             int status = "File does not exist.".equals(msg) ? 404 : 400;
             sendJson(exchange, status, Map.of("ok", false, "error", msg));

@@ -1,4 +1,4 @@
-package gitlet;
+package syncvault;
 
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
@@ -20,8 +20,8 @@ public class CommitIdTest {
     public void initialCommitIdIsUnchanged(@TempDir Path tempDir) throws Exception {
         Store.useDir(tempDir.toFile());
         Store.createSchema();
-        /* Same id the file-based Gitlet produced for the initial commit (SHA-256). */
-        assertEquals("15fd3b342ae2da4040205a401738f036a98456e28db0f20dd233be944e99dd01",
+        /* Initial commit id for SyncVault (SHA-256). */
+        assertEquals("860367ca764a82fc4d959fdc3b2f476ea0165d2a89dd0b7d23911062742b2198",
                 Commit.first_commit());
     }
 }

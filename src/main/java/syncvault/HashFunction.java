@@ -1,9 +1,9 @@
-package gitlet;
+package syncvault;
 
 import java.util.List;
 
 /**
- * Interface for pluggable hash algorithms in Gitlet.
+ * Interface for pluggable hash algorithms in SyncVault.
  */
 public interface HashFunction {
 

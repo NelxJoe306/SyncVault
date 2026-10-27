@@ -1,16 +1,16 @@
-package gitlet;
+package syncvault;
 
 import java.io.File;
 import java.io.IOException;
 
-import static gitlet.Repository.*;
+import static syncvault.Repository.*;
 
-/** Driver class for Gitlet, a subset of the Git version-control system.
+/** Driver class for SyncVault, a subset of the Git version-control system.
  *  @author JOE
  */
 public class Main {
 
-    /** Usage: java gitlet.Main ARGS, where ARGS contains
+    /** Usage: java syncvault.Main ARGS, where ARGS contains
      * init
      * add
      * commit
@@ -54,13 +54,13 @@ public class Main {
             try {
                 Benchmark.main(benchArgs);
             } catch (Exception e) {
-                throw new GitletException(e.getMessage());
+                throw new SyncVaultException(e.getMessage());
             }
             return;
         }
 
-        if (!Repository.GITLET_DIR.exists()) {
-            System.out.println("Not in an initialized Gitlet directory.");
+        if (!Repository.SYNCVAULT_DIR.exists()) {
+            System.out.println("Not in an initialized SyncVault directory.");
             System.exit(0);
         }
 
@@ -173,7 +173,7 @@ public class Main {
                     } else {
                         Repository.resolve(args[1], args[2]);
                     }
-                } catch (GitletException e) {
+                } catch (SyncVaultException e) {
                     System.out.println(e.getMessage());
                     System.exit(0);
                 }
@@ -285,7 +285,7 @@ public class Main {
                 default:
                     break;
             }
-        } catch (GitletException e) {
+        } catch (SyncVaultException e) {
             System.out.println(e.getMessage());
             System.exit(0);
         }
@@ -339,7 +339,7 @@ public class Main {
         int targetPort = (port != null) ? port : NettyServer.DEFAULT_PORT;
         try {
             Repository.serve(targetPort, token, tlsCert, tlsKey).await();
-        } catch (GitletException e) {
+        } catch (SyncVaultException e) {
             System.out.println(e.getMessage());
             System.exit(0);
         }

@@ -72,7 +72,7 @@ public class GcPushMutexTest {
         TreeMap<String, String> map1 = new TreeMap<>();
         map1.put("file1.txt", blob1Hash);
         Commit c1 = new Commit("commit c1", map1, c0, null);
-        c1.setSelfHash(Utils.hash(Utils.serialize(c1)));
+        c1.setSelfHash(c1.contentId());
 
         CountDownLatch pushAttempted = new CountDownLatch(1);
         AtomicBoolean pushFinished = new AtomicBoolean(false);
@@ -80,20 +80,13 @@ public class GcPushMutexTest {
 
         Thread pushThread = new Thread(() -> {
             try {
-                // Simulate push path (acquiring RepoLock, then writing objects and advancing ref)
+                // Production pairing: RepoLock, in-flight registration, then the write transaction.
                 pushAttempted.countDown();
-                try (RepoLock lock = session.acquireLock()) {
-                    session.startInFlightPush();
-                    try {
-                        session.begin();
-                        session.putBlob(blob1Hash, blob1Bytes);
-                        session.putCommit(c1);
-                        session.setRef("master", c1.getSelfHash());
-                        session.commitTx();
-                    } finally {
-                        session.endInFlightPush();
-                    }
-                }
+                session.runInFlightPush(() -> {
+                    session.putBlob(blob1Hash, blob1Bytes);
+                    session.putCommit(c1);
+                    session.setRef("master", c1.getSelfHash());
+                });
                 pushFinished.set(true);
             } catch (Throwable t) {
                 pushError.set(t);
@@ -152,7 +145,7 @@ public class GcPushMutexTest {
         TreeMap<String, String> map1 = new TreeMap<>();
         map1.put("data.txt", blobHash);
         Commit c1 = new Commit("interleaved commit", map1, c0, null);
-        c1.setSelfHash(Utils.hash(Utils.serialize(c1)));
+        c1.setSelfHash(c1.contentId());
 
         session.putBlob(blobHash, blobBytes);
         session.putCommit(c1);
@@ -198,7 +191,7 @@ public class GcPushMutexTest {
         TreeMap<String, String> map = new TreeMap<>();
         map.put("orphan.txt", orphanBlob);
         Commit orphanCommit = new Commit("orphan commit", map, c0, null);
-        orphanCommit.setSelfHash(Utils.hash(Utils.serialize(orphanCommit)));
+        orphanCommit.setSelfHash(orphanCommit.contentId());
         session.putCommit(orphanCommit);
 
         // Run GC with 60 second grace period
@@ -217,30 +210,50 @@ public class GcPushMutexTest {
     }
 
     /**
-     * Requirement 2: In-flight push tracking protects objects during active push sessions.
+     * In-flight protection covers only hashes this push has written.
+     * An empty set does not shield the repository. GC runs on the same thread
+     * while that thread holds RepoLock, matching production where push and GC
+     * share the lock (re-entrant here so the sweep can observe the set).
      */
     @Test
     public void testInFlightPushProtectsObjects(@TempDir Path tempDir) throws Exception {
         File syncvaultDir = tempDir.resolve(".syncvault").toFile();
-        initRepo(syncvaultDir);
+        String c0 = initRepo(syncvaultDir);
         Store.Session session = Store.getDefault();
 
-        session.startInFlightPush();
-        String inFlightBlob = putBlob(session, "in-flight object data\n");
-        assertTrue(session.isObjectInFlight(inFlightBlob));
+        String priorBlob = putBlob(session, "written before this push\n");
+        TreeMap<String, String> priorMap = new TreeMap<>();
+        priorMap.put("prior.txt", priorBlob);
+        Commit priorCommit = new Commit("prior orphan", priorMap, c0, null);
+        priorCommit.setSelfHash(priorCommit.contentId());
+        session.putCommit(priorCommit);
 
-        // GC with 0 grace while in-flight push is active
-        Store.GcResult res = session.gc(0);
-        assertEquals(0, res.deletedBlobs());
-        assertTrue(session.hasObject(inFlightBlob), "In-flight object should be preserved by GC");
+        String[] inFlightBlob = new String[1];
+        session.runInFlightPush(() -> {
+            assertFalse(session.isObjectInFlight(priorBlob));
+            assertFalse(session.isObjectInFlight(priorCommit.getSelfHash()));
+            assertFalse(session.isObjectInFlight("not-written-by-this-push"));
 
-        session.endInFlightPush();
-        assertFalse(session.isObjectInFlight(inFlightBlob));
+            Store.GcResult swept = session.gc(0);
+            assertEquals(1, swept.deletedCommits());
+            assertEquals(1, swept.deletedBlobs());
+            assertFalse(session.hasObject(priorCommit.getSelfHash()));
+            assertFalse(session.hasObject(priorBlob));
 
-        // GC after in-flight push ended
+            inFlightBlob[0] = putBlob(session, "in-flight object data\n");
+            assertTrue(session.isObjectInFlight(inFlightBlob[0]));
+
+            Store.GcResult kept = session.gc(0);
+            assertEquals(0, kept.deletedBlobs());
+            assertTrue(session.hasObject(inFlightBlob[0]), "Hash written by this push is kept");
+        });
+
+        assertFalse(session.isObjectInFlight(inFlightBlob[0]));
+        assertTrue(session.hasObject(inFlightBlob[0]));
+
         Store.GcResult purgeRes = session.gc(0);
         assertEquals(1, purgeRes.deletedBlobs());
-        assertFalse(session.hasObject(inFlightBlob), "Object should be deleted once in-flight push ends");
+        assertFalse(session.hasObject(inFlightBlob[0]), "Object should be deleted once in-flight push ends");
     }
 
     /**
@@ -284,20 +297,13 @@ public class GcPushMutexTest {
                     TreeMap<String, String> map = new TreeMap<>();
                     map.put("file-" + threadId + ".txt", blobHash);
                     Commit c = new Commit("c-" + threadId + "-" + op, map, parentId, null);
-                    c.setSelfHash(Utils.hash(Utils.serialize(c)));
+                    c.setSelfHash(c.contentId());
 
-                    try (RepoLock lock = session.acquireLock()) {
-                        session.startInFlightPush();
-                        try {
-                            session.begin();
-                            session.putBlob(blobHash, data);
-                            session.putCommit(c);
-                            session.setRef(branchName, c.getSelfHash());
-                            session.commitTx();
-                        } finally {
-                            session.endInFlightPush();
-                        }
-                    }
+                    session.runInFlightPush(() -> {
+                        session.putBlob(blobHash, data);
+                        session.putCommit(c);
+                        session.setRef(branchName, c.getSelfHash());
+                    });
                     parentId = c.getSelfHash();
                 }
                 return null;
@@ -382,7 +388,7 @@ public class GcPushMutexTest {
             TreeMap<String, String> map = new TreeMap<>();
             map.put("test" + i + ".txt", blobHash);
             Commit c = new Commit("commit " + i, map, parent, null);
-            c.setSelfHash(Utils.hash(Utils.serialize(c)));
+            c.setSelfHash(c.contentId());
             Store.putCommit(c);
             Store.setRef("master", c.getSelfHash());
             Repository.currHead = c.getSelfHash();

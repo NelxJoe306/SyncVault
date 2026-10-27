@@ -306,8 +306,46 @@ public class Store {
             }
         }
 
+        /**
+         * True only for a hash this push has already written.
+         * An empty {@code inFlightObjects} set protects nothing, including the
+         * window after {@link #startInFlightPush()} and before the first put.
+         * {@link RepoLock} and the grace window remain the primary safety net.
+         */
         public boolean isObjectInFlight(String hash) {
-            return inFlightPushCount.get() > 0 && (inFlightObjects.contains(hash) || inFlightObjects.isEmpty());
+            return hash != null
+                    && inFlightPushCount.get() > 0
+                    && inFlightObjects.contains(hash);
+        }
+
+        /**
+         * Shared push critical section: repository lock, in-flight registration,
+         * then one transaction. Used by Netty {@code handlePushObjects} and
+         * local {@code Repository.push}. Only objects written inside {@code body}
+         * are recorded as in-flight.
+         */
+        public void runInFlightPush(ThrowingRunnable body) {
+            try (RepoLock ignored = acquireLock()) {
+                startInFlightPush();
+                try {
+                    begin();
+                    try {
+                        body.run();
+                        commitTx();
+                    } catch (Throwable t) {
+                        rollback();
+                        if (t instanceof RuntimeException) {
+                            throw (RuntimeException) t;
+                        } else if (t instanceof Error) {
+                            throw (Error) t;
+                        } else {
+                            throw new SyncVaultException(t.getMessage());
+                        }
+                    }
+                } finally {
+                    endInFlightPush();
+                }
+            }
         }
 
         public File getDbFile() {

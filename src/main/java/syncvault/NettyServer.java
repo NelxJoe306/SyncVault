@@ -319,10 +319,8 @@ public class NettyServer implements AutoCloseable {
         }
 
         private void handlePushObjects(ChannelHandlerContext ctx, SyncMessage msg) {
-            try (RepoLock lock = session.acquireLock()) {
-                session.startInFlightPush();
-                session.begin();
-                try {
+            try {
+                session.runInFlightPush(() -> {
                     if (msg.branch == null || msg.branch.isEmpty()) {
                         throw new SyncVaultException("Push rejected: branch name cannot be empty.");
                     }
@@ -343,14 +341,8 @@ public class NettyServer implements AutoCloseable {
                     }
                     verifyPushIntegrity(session, msg.tipHash);
                     session.setRef(msg.branch, msg.tipHash);
-                    session.commitTx();
-                    ctx.writeAndFlush(SyncMessage.ack());
-                } catch (Throwable t) {
-                    session.rollback();
-                    ctx.writeAndFlush(SyncMessage.error(t.getMessage()));
-                } finally {
-                    session.endInFlightPush();
-                }
+                });
+                ctx.writeAndFlush(SyncMessage.ack());
             } catch (Throwable t) {
                 ctx.writeAndFlush(SyncMessage.error(t.getMessage()));
             }

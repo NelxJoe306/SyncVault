@@ -877,40 +877,33 @@ public class Repository {
         }
 
         // Copy commits and blobs from local to remote
-        try (RepoLock lock = remoteStore.acquireLock()) {
-            remoteStore.startInFlightPush();
-            try {
-                remoteStore.begin();
-                Queue<String> qSync = new ArrayDeque<>();
-                Set<String> visitedSync = new HashSet<>();
-                qSync.add(currHead);
-                visitedSync.add(currHead);
-                while (!qSync.isEmpty()) {
-                    String id = qSync.poll();
-                    if (!remoteStore.hasObject(id)) {
-                        Commit c = Store.getCommit(id);
-                        remoteStore.putCommit(c);
-                        for (String blobHash : c.getNameToHash().values()) {
-                            byte[] localBlob = Store.getBlob(blobHash);
-                            if (localBlob != null && !remoteStore.hasObject(blobHash)) {
-                                remoteStore.putBlob(blobHash, localBlob);
-                            }
-                        }
-                    }
-                    for (String p : Commit.return_parents(id)) {
-                        if (p != null && !visitedSync.contains(p)) {
-                            visitedSync.add(p);
-                            qSync.add(p);
+        remoteStore.runInFlightPush(() -> {
+            Queue<String> qSync = new ArrayDeque<>();
+            Set<String> visitedSync = new HashSet<>();
+            qSync.add(currHead);
+            visitedSync.add(currHead);
+            while (!qSync.isEmpty()) {
+                String id = qSync.poll();
+                if (!remoteStore.hasObject(id)) {
+                    Commit c = Store.getCommit(id);
+                    remoteStore.putCommit(c);
+                    for (String blobHash : c.getNameToHash().values()) {
+                        byte[] localBlob = Store.getBlob(blobHash);
+                        if (localBlob != null && !remoteStore.hasObject(blobHash)) {
+                            remoteStore.putBlob(blobHash, localBlob);
                         }
                     }
                 }
-
-                remoteStore.setRef(branchName, currHead);
-                remoteStore.commitTx();
-            } finally {
-                remoteStore.endInFlightPush();
+                for (String p : Commit.return_parents(id)) {
+                    if (p != null && !visitedSync.contains(p)) {
+                        visitedSync.add(p);
+                        qSync.add(p);
+                    }
+                }
             }
-        }
+
+            remoteStore.setRef(branchName, currHead);
+        });
         remoteStore.close();
     }
 

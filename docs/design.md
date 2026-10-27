@@ -291,4 +291,4 @@ files          重复 fileCount 次：文件名、blob id（都是非空字符�
 - **宽限期与在途写入保护（Grace Period & In-Flight Protection）**：
   - `object` 表增加 `created_at` 毫秒时间戳记录对象写入时间。
   - **宽限期（Grace Period）**：`gc(long graceMillis)` 支持指定宽限期（可通过 CLI 参数 `--grace=<ms>` / `--grace-seconds=<s>`、系统属性 `syncvault.gc.graceMs` 或环境变量 `SYNCVAULT_GC_GRACE_MS` 配置，默认 0 保持即时清理兼容性）。凡在宽限窗口内新写入的对象（`createdAt >= gcStartTime - graceMillis`）本轮 GC 不予清除。若某一不可达 commit 处于宽限期内，其快照包含的全部 blob 亦自动继承保留。
-  - **在途写入保护（In-Flight Protection）**：Push 事务执行期间通过 `session.startInFlightPush()` / `endInFlightPush()` 跟踪活跃写入会话，在途状态下写入的对象即使暂无引用指向，亦豁免于同轮 GC 清理。
+  - **在途写入保护（In-Flight Protection）**：Push 临界区（`Session.runInFlightPush`：仓库锁 → `startInFlightPush` → 事务 → `endInFlightPush`）只登记本次 push 实际写入的对象哈希。`inFlightObjects` 为空时不保护任何对象，不会把库里所有对象都当成在途。仓库锁与宽限期仍是主要安全保障；已登记且尚无引用的对象豁免于同轮 GC。

@@ -324,19 +324,37 @@ public class NettyServer implements AutoCloseable {
                     if (msg.branch == null || msg.branch.isEmpty()) {
                         throw new SyncVaultException("Push rejected: branch name cannot be empty.");
                     }
+                    // PUSH_REQ and PUSH_OBJECTS are separate messages. The tip the
+                    // client observed is carried here and compared under this lock.
+                    String current = normalizeTip(session.getRef(msg.branch));
+                    String expected = normalizeTip(msg.expectedOldTip);
+                    if (!Objects.equals(current, expected)) {
+                        throw new SyncVaultException(
+                                "Push rejected: expected tip " + displayTip(expected)
+                                        + " but branch " + msg.branch + " is at " + displayTip(current) + ".");
+                    }
+
+                    Map<String, Commit> incoming = new LinkedHashMap<>();
                     if (msg.commits != null) {
                         for (byte[] commitBytes : msg.commits) {
-                            Commit c = SyncMessage.deserializeCommit(commitBytes);
-                            if (!session.hasObject(c.getSelfHash())) {
-                                session.putCommit(c);
-                            }
+                            Commit c = commitFromWire(commitBytes, "Push");
+                            incoming.put(c.getSelfHash(), c);
                         }
                     }
                     if (msg.blobs != null) {
                         for (Map.Entry<String, byte[]> entry : msg.blobs.entrySet()) {
-                            if (!session.hasObject(entry.getKey())) {
-                                session.putBlob(entry.getKey(), entry.getValue());
-                            }
+                            verifyBlobBytes(entry.getKey(), entry.getValue(), "Push");
+                        }
+                    }
+                    if (current != null && !fastForwards(session, msg.tipHash, current, incoming)) {
+                        throw new SyncVaultException("Push rejected: not a fast-forward.");
+                    }
+                    for (Commit c : incoming.values()) {
+                        ingestCommit(session, c, "Push");
+                    }
+                    if (msg.blobs != null) {
+                        for (Map.Entry<String, byte[]> entry : msg.blobs.entrySet()) {
+                            ingestBlob(session, entry.getKey(), entry.getValue(), "Push");
                         }
                     }
                     verifyPushIntegrity(session, msg.tipHash);
@@ -354,6 +372,120 @@ public class NettyServer implements AutoCloseable {
         }
     }
 
+    /**
+     * Null and empty both mean "no tip" (a branch that does not exist yet).
+     */
+    static String normalizeTip(String tip) {
+        if (tip == null || tip.isEmpty()) {
+            return null;
+        }
+        return tip;
+    }
+
+    private static String displayTip(String tip) {
+        return tip == null ? "absent" : tip;
+    }
+
+    /**
+     * Reject a blob whose bytes do not hash to the id the peer claimed.
+     * {@code Store.putBlob} is {@code INSERT OR IGNORE}, so writing a mismatched
+     * body would keep the wrong bytes under that id forever.
+     */
+    static void verifyBlobBytes(String claimedId, byte[] body, String action) {
+        if (claimedId == null || claimedId.isEmpty()) {
+            throw new SyncVaultException(action + " rejected: missing blob id.");
+        }
+        if (body == null || !Utils.hash(body).equals(claimedId)) {
+            throw new SyncVaultException(action + " rejected: blob " + claimedId + " content hash mismatch.");
+        }
+    }
+
+    /**
+     * Decode wire commit bytes and require {@code hash(bytes) == selfHash == contentId}.
+     */
+    static Commit commitFromWire(byte[] commitBytes, String action) {
+        if (commitBytes == null || commitBytes.length == 0) {
+            throw new SyncVaultException(action + " rejected: missing commit bytes.");
+        }
+        String actual = Utils.hash(commitBytes);
+        Commit commit = SyncMessage.deserializeCommit(commitBytes);
+        if (commit.getSelfHash() == null || !actual.equals(commit.getSelfHash())
+                || !actual.equals(commit.contentId())) {
+            throw new SyncVaultException(action + " rejected: commit " + commit.getSelfHash()
+                    + " content hash mismatch.");
+        }
+        return commit;
+    }
+
+    static void ingestBlob(Store.Session session, String claimedId, byte[] body, String action) {
+        verifyBlobBytes(claimedId, body, action);
+        if (session.hasObject(claimedId)) {
+            byte[] existing = session.getBlob(claimedId);
+            if (existing == null || !Utils.hash(existing).equals(claimedId)) {
+                throw new SyncVaultException(action + " rejected: blob " + claimedId + " content hash mismatch.");
+            }
+            return;
+        }
+        session.putBlob(claimedId, body);
+    }
+
+    static void ingestCommit(Store.Session session, byte[] commitBytes, String action) {
+        ingestCommit(session, commitFromWire(commitBytes, action), action);
+    }
+
+    private static void ingestCommit(Store.Session session, Commit commit, String action) {
+        String id = commit.getSelfHash();
+        if (session.hasObject(id)) {
+            byte[] existing = session.getBlob(id);
+            if (existing == null || !Utils.hash(existing).equals(id)) {
+                throw new SyncVaultException(action + " rejected: commit " + id + " content hash mismatch.");
+            }
+            return;
+        }
+        session.putCommit(commit);
+    }
+
+    /**
+     * True when {@code oldTip} is {@code newTip} or can be reached by walking
+     * parents. Commits in {@code incoming} are visible before they are written.
+     */
+    static boolean fastForwards(Store.Session session, String newTip, String oldTip,
+                                Map<String, Commit> incoming) {
+        if (oldTip == null || oldTip.isEmpty()) {
+            return true;
+        }
+        if (newTip == null || newTip.isEmpty()) {
+            return false;
+        }
+        Map<String, Commit> known = (incoming != null) ? incoming : Collections.emptyMap();
+        Set<String> visited = new HashSet<>();
+        ArrayDeque<String> queue = new ArrayDeque<>();
+        queue.add(newTip);
+        while (!queue.isEmpty()) {
+            String id = queue.poll();
+            if (!visited.add(id)) {
+                continue;
+            }
+            if (id.equals(oldTip)) {
+                return true;
+            }
+            Commit commit = known.get(id);
+            if (commit == null && session != null) {
+                commit = session.getCommit(id);
+            }
+            if (commit == null) {
+                continue;
+            }
+            if (commit.getParent() != null && !commit.getParent().isEmpty()) {
+                queue.add(commit.getParent());
+            }
+            if (commit.getSecondParent() != null && !commit.getSecondParent().isEmpty()) {
+                queue.add(commit.getSecondParent());
+            }
+        }
+        return false;
+    }
+
     static void verifyPushIntegrity(Store.Session session, String tipHash) {
         if (tipHash == null || tipHash.isEmpty()) {
             throw new SyncVaultException("Push rejected: missing tip commit.");
@@ -367,6 +499,13 @@ public class NettyServer implements AutoCloseable {
 
         while (!queue.isEmpty()) {
             String commitHash = queue.poll();
+            byte[] raw = session.getBlob(commitHash);
+            if (raw == null) {
+                throw new SyncVaultException("Push rejected: missing commit " + commitHash);
+            }
+            if (!Utils.hash(raw).equals(commitHash)) {
+                throw new SyncVaultException("Push rejected: commit " + commitHash + " content hash mismatch.");
+            }
             Commit commit = session.getCommit(commitHash);
             if (commit == null) {
                 throw new SyncVaultException("Push rejected: missing commit " + commitHash);
@@ -377,8 +516,12 @@ public class NettyServer implements AutoCloseable {
                         throw new SyncVaultException("Push rejected: missing blob " + blobHash);
                     }
                     if (verifiedBlobs.add(blobHash)) {
-                        if (!session.hasObject(blobHash)) {
+                        byte[] blob = session.getBlob(blobHash);
+                        if (blob == null) {
                             throw new SyncVaultException("Push rejected: missing blob " + blobHash);
+                        }
+                        if (!Utils.hash(blob).equals(blobHash)) {
+                            throw new SyncVaultException("Push rejected: blob " + blobHash + " content hash mismatch.");
                         }
                     }
                 }

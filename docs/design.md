@@ -66,8 +66,8 @@ merge 的八条规则还在 `Repository.merge` 里：当前和给定相同就保
    - **传输帧与协议（`SyncMessage`）**：基于 Netty `LengthFieldBasedFrameDecoder` / `LengthFieldPrepender`（4 字节长度前缀）。帧体是 SVM1 显式字段编码，不是 Java 序列化。其中的 commit 载荷是 SVC1 字节。
    - **共享令牌鉴权（Token Auth）**：通过 `--token`、环境变量 `SYNCVAULT_SYNC_TOKEN` 或仓库文件 `.syncvault/sync-token`（优先级：`--token` > `SYNCVAULT_SYNC_TOKEN` > `.syncvault/sync-token`）配置令牌。服务端配置令牌后，要求客户端 `HELLO` 携带相同令牌（使用 `MessageDigest.isEqual` 常量时间比对），缺失或错误时返回 `ERROR("Authentication failed: invalid or missing sync token.")` 并拒绝后续 `PUSH_*` / `FETCH_*` 操作；未配置令牌时默认免密以保持向后兼容。本地目录远程不受令牌影响。
    - **可选 TLS 加密**：服务端提供 `--tls-cert` + `--tls-key`（或 `SYNCVAULT_TLS_CERT` + `SYNCVAULT_TLS_KEY`）时在管线最前端挂载 `SslHandler`。客户端使用 `nettys://host:port` 或显式 TLS 参数时启用 `SslContext`，支持自定义受信任证书（`--tls-ca` / `SYNCVAULT_TLS_CA` / `.syncvault/tls-ca.pem`）或显式 `--tls-insecure`（`SYNCVAULT_TLS_INSECURE=true`）。
-   - **Fetch 流程**：`HELLO` / `HELLO_OK` 握手后，客户端发送 `FETCH_REQ(branch)`；服务端返回 `FETCH_TIP(tip)`（若分支不存在则返回 `ERROR`，客户端打印 `That remote does not have that branch.`）；客户端发送本地已有的提交哈希集合 `FETCH_HAVE`，服务端通过 BFS 计算缺失的 Commit 序列化字节及关联 Blob 并以 `FETCH_OBJECTS` 返回；客户端在单一 SQLite 事务中写入对象并更新 `ref/<remote>/<branch>`，最后回复 `ACK`。
-   - **Push 流程**：握手后客户端发送 `PUSH_REQ(branch, localTip)`；服务端返回远端当前分支头与已有提交集合 `PUSH_TIP`；客户端复用 BFS 校验远端分支头是否为本地分支头的祖先（否则打印 `Please pull down remote changes before pushing.`），收集缺失的 Commit 与 Blob 通过 `PUSH_OBJECTS` 发送；服务端在单一 SQLite 事务中写入对象并更新分支引用，回复 `ACK`。
+   - **Fetch 流程**：`HELLO` / `HELLO_OK` 握手后，客户端发送 `FETCH_REQ(branch)`；服务端返回 `FETCH_TIP(tip)`（若分支不存在则返回 `ERROR`，客户端打印 `That remote does not have that branch.`）；客户端发送本地已有的提交哈希集合 `FETCH_HAVE`，服务端通过 BFS 计算缺失的 Commit 序列化字节及关联 Blob 并以 `FETCH_OBJECTS` 返回；客户端在单一 SQLite 事务中写入对象并更新 `ref/<remote>/<branch>`，最后回复 `ACK`。写入前用当前哈希函数核对 blob 正文和 commit 字节：声称的 id 必须等于内容哈希，tip 指向的对象也必须满足这一点。不匹配则回滚，错误正文不会入库。
+   - **Push 流程**：握手后客户端发送 `PUSH_REQ(branch, localTip)`；服务端返回远端当前分支头与已有提交集合 `PUSH_TIP`；客户端复用 BFS 校验远端分支头是否为本地分支头的祖先（否则打印 `Please pull down remote changes before pushing.`），收集缺失的 Commit 与 Blob，通过 `PUSH_OBJECTS` 发送，并带上刚从 `PUSH_TIP` 读到的远端头 `expectedOldTip`（新分支为 null 或空串）。服务端在仓库锁和单个 SQLite 事务里按顺序做三件事：当前 ref 必须等于 `expectedOldTip`（两边都空表示创建分支；这是 compare-and-swap / 乐观锁，过期的 expectedOldTip 直接拒绝）；若当前头存在，它必须是新头的祖先（服务端快进，拒绝 force-push）；然后核对 Commit/Blob 的内容哈希与声称的 id，再 `setRef`。`PUSH_REQ` 和 `PUSH_OBJECTS` 是两条消息，锁只包住后者，所以比较发生在写 ref 的同一临界区里。任一检查失败则整笔事务回滚并回复 `ERROR`。成功回复 `ACK`。
 
 ## 以后可以改，这次没有改
 
@@ -267,13 +267,15 @@ files          重复 fileCount 次：文件名、blob id（都是非空字符�
 
 - 提交 id = 当前 `HashFunction` 对这段规范字节的哈希（默认 SHA-256，`Commit.contentId()`）。时间戳为 0、说明为 `initial commit`、没有父提交、文件表为空的初始提交 id 是 `09dcbc6680373bdb509a1d45ba888bf89ade8780bbfe9bba9e19fcbcf1ef4d02`（`CommitIdTest`）。
 - `Store.putCommit` 把 `Commit.encode()` 写入 `object.data`，主键是调用方设置的 id。正常提交用 `contentId()`。`getCommit` 解码后再把 `self_hash` 设成主键，所以测试里人为指定的 id 仍能读回。
-- 线上的 commit 载荷就是同一段 SVC1 字节。`deserializeCommit` 解码后把 `self_hash` 设成 `contentId()`，不信任对端另报的 id。
+- 线上的 commit 载荷就是同一段 SVC1 字节。`deserializeCommit` 解码后把 `self_hash` 设成 `contentId()`，不信任对端另报的 id。Netty 入库前再比对 `Utils.hash(原始字节)` 与这个 id，不一致直接拒绝。
 - 字节必须以规范形式出现（文件名按 TreeMap 顺序、没有尾部垃圾）。`0xACED` 开头的 Java 序列化会被拒绝，不会进入 `readObject`。
-- Blob id 仍是文件原始字节的哈希。
+- Blob id 仍是文件原始字节的哈希。Push 和 fetch 收到 blob 时先算这个哈希，和对方报的 id 不一致就不调用 `putBlob`。`putBlob` 仍是 `INSERT OR IGNORE`，所以错误正文一旦写进主键就盖不掉；入库前拒绝是为了不让这一行出现。已经落在库里、但正文对不上 id 的对象，`verifyPushIntegrity` 也会拒绝，不会拿它当合法 tip。
 
 **SVM1（同步消息，大端）**
 
-魔数 `'S' 'V' 'M' '1'`，`uint16` 版本 1，然后是固定的 type 编号（1 HELLO … 11 ERROR，不使用 `enum.ordinal()`）。后面依次是 branch、tipHash、error、token（均可空）、hashes（可空的字符串列表，写出时按字典序）、commits（可空的字节数组列表，元素是 SVC1）、blobs（可空的 id + 字节列表）。null 和空集合用标志字节区分。长度帧仍然是 Netty 的 4 字节前缀。
+魔数 `'S' 'V' 'M' '1'`，`uint16` 版本。版本 1 的字段到 blobs 为止。版本 2 在 blobs 之后追加一个可空字符串 `expectedOldTip`（`PUSH_OBJECTS` 使用：客户端在 `PUSH_TIP` 里看到的远端分支头；null 或空串表示期望该分支还不存在）。当前编码器写版本 2。解码器仍接受版本 1：没有该字段时 `expectedOldTip` 为 null，服务端按「期望分支不存在」处理，因此旧客户端不能推进一条已经存在的分支。其它版本号会被拒绝。
+
+后面是固定的 type 编号（1 HELLO … 11 ERROR，不使用 `enum.ordinal()`），然后依次是 branch、tipHash、error、token（均可空）、hashes（可空的字符串列表，写出时按字典序）、commits（可空的字节数组列表，元素是 SVC1）、blobs（可空的 id + 字节列表），版本 2 再加 `expectedOldTip`。null 和空集合用标志字节区分。长度帧仍然是 Netty 的 4 字节前缀。
 
 **0.1.0-SNAPSHOT 的迁移（不兼容旧库）**
 

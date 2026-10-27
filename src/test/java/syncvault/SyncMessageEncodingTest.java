@@ -39,6 +39,8 @@ public class SyncMessageEncodingTest {
         assertRoundTrip(SyncMessage.pushReq("master", "local"));
         assertRoundTrip(SyncMessage.pushTip(null, Set.of("b", "a")));
         assertRoundTrip(SyncMessage.pushObjects("master", "local", List.of(commitBytes), blobs));
+        assertRoundTrip(SyncMessage.pushObjects("master", "local", List.of(commitBytes), blobs, "old-tip"));
+        assertRoundTrip(SyncMessage.pushObjects("feature", "local", List.of(commitBytes), blobs, null));
         assertRoundTrip(SyncMessage.ack());
         assertRoundTrip(SyncMessage.error("nope"));
 
@@ -60,7 +62,7 @@ public class SyncMessageEncodingTest {
     public void codecRoundTripsInsideLengthFrame() {
         Commit commit = new Commit("framed", new TreeMap<>(), "p");
         SyncMessage original = SyncMessage.pushObjects(
-                "master", "tip", List.of(commit.encode()), Map.of("h", new byte[] {9}));
+                "master", "tip", List.of(commit.encode()), Map.of("h", new byte[] {9}), "base");
         EmbeddedChannel channel = new EmbeddedChannel(
                 new LengthFieldBasedFrameDecoder(NettyServer.MAX_FRAME_BYTES, 0, 4, 0, 4),
                 new LengthFieldPrepender(4),
@@ -81,6 +83,7 @@ public class SyncMessageEncodingTest {
             assertEquals(SyncMessage.Type.PUSH_OBJECTS, decoded.type);
             assertEquals("master", decoded.branch);
             assertEquals("tip", decoded.tipHash);
+            assertEquals("base", decoded.expectedOldTip);
             assertArrayEquals(original.commits.get(0), decoded.commits.get(0));
             assertArrayEquals(new byte[] {9}, decoded.blobs.get("h"));
         } finally {
@@ -115,6 +118,32 @@ public class SyncMessageEncodingTest {
         }
     }
 
+    @Test
+    public void version1MessagesDecodeWithoutExpectedOldTip() {
+        byte[] v1Ack = new byte[] {
+                'S', 'V', 'M', '1',
+                0, 1,
+                10,
+                0, 0, 0, 0,
+                0, 0, 0
+        };
+        SyncMessage decoded = SyncMessage.decode(v1Ack);
+        assertEquals(SyncMessage.Type.ACK, decoded.type);
+        assertNull(decoded.expectedOldTip);
+
+        SyncVaultException rejected = assertThrows(
+                SyncVaultException.class,
+                () -> SyncMessage.decode(new byte[] {
+                        'S', 'V', 'M', '1',
+                        0, 3,
+                        10,
+                        0, 0, 0, 0,
+                        0, 0, 0
+                })
+        );
+        assertTrue(rejected.getMessage().contains("unsupported sync message version"));
+    }
+
     private static void assertRoundTrip(SyncMessage message) {
         byte[] encoded = message.encode();
         assertNotEquals((byte) 0xAC, encoded[0]);
@@ -124,7 +153,9 @@ public class SyncMessageEncodingTest {
         assertEquals(message.tipHash, decoded.tipHash);
         assertEquals(message.error, decoded.error);
         assertEquals(message.token, decoded.token);
+        assertEquals(message.expectedOldTip, decoded.expectedOldTip);
         assertEquals(message.hashes, decoded.hashes);
+        assertEquals(SyncMessage.VERSION, ((encoded[4] & 0xFF) << 8) | (encoded[5] & 0xFF));
         if (message.commits == null) {
             assertNull(decoded.commits);
         } else {

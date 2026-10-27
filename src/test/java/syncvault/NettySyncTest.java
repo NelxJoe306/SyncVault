@@ -27,8 +27,11 @@ import java.security.KeyStore;
 import java.security.cert.Certificate;
 import java.util.Base64;
 
+import java.sql.PreparedStatement;
 import java.util.*;
+import java.util.concurrent.CyclicBarrier;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicReference;
 
 import static org.junit.jupiter.api.Assertions.*;
 
@@ -492,6 +495,10 @@ public class NettySyncTest {
     }
 
     private SyncMessage sendRawSyncMessage(int port, SyncMessage message) throws Exception {
+        return sendRawSyncMessage(port, message, null);
+    }
+
+    private SyncMessage sendRawSyncMessage(int port, SyncMessage message, CyclicBarrier ready) throws Exception {
         EventLoopGroup group = new NioEventLoopGroup(1);
         Channel ch = null;
         try {
@@ -513,12 +520,25 @@ public class NettySyncTest {
                     });
             ch = b.connect("127.0.0.1", port).sync().channel();
             handler.request(ch, SyncMessage.hello(null));
+            if (ready != null) {
+                ready.await(10, TimeUnit.SECONDS);
+            }
             return handler.request(ch, message);
         } finally {
             if (ch != null) {
                 ch.close().syncUninterruptibly();
             }
             group.shutdownGracefully(0, 1, TimeUnit.SECONDS).syncUninterruptibly();
+        }
+    }
+
+    private static void insertRawObject(Store.Session session, String hash, String type, byte[] data) throws Exception {
+        try (PreparedStatement ps = session.getConnection().prepareStatement(
+                "INSERT INTO object (hash, type, data, created_at) VALUES (?, ?, ?, 0)")) {
+            ps.setString(1, hash);
+            ps.setString(2, type);
+            ps.setBytes(3, data);
+            ps.executeUpdate();
         }
     }
 
@@ -529,8 +549,7 @@ public class NettySyncTest {
         try (Store.Session session = Store.open(repoDir)) {
             String missingParentId = "1111222233334444555566667777888899990000";
             Commit orphan = new Commit("orphan commit", new TreeMap<>(), missingParentId);
-            byte[] orphanBytes = Utils.serialize(orphan);
-            orphan.setSelfHash(Utils.hash(orphanBytes));
+            orphan.setSelfHash(orphan.contentId());
             session.putCommit(orphan);
 
             SyncVaultException ex = assertThrows(
@@ -550,8 +569,7 @@ public class NettySyncTest {
             TreeMap<String, String> map = new TreeMap<>();
             map.put("file.txt", missingBlobHash);
             Commit commitWithMissingBlob = new Commit("commit missing blob", map, initId);
-            byte[] bytes = Utils.serialize(commitWithMissingBlob);
-            commitWithMissingBlob.setSelfHash(Utils.hash(bytes));
+            commitWithMissingBlob.setSelfHash(commitWithMissingBlob.contentId());
             session.putCommit(commitWithMissingBlob);
 
             SyncVaultException ex = assertThrows(
@@ -574,8 +592,7 @@ public class NettySyncTest {
             TreeMap<String, String> map = new TreeMap<>();
             map.put("valid.txt", blobHash);
             Commit commit = new Commit("valid commit", map, initId);
-            byte[] bytes = Utils.serialize(commit);
-            commit.setSelfHash(Utils.hash(bytes));
+            commit.setSelfHash(commit.contentId());
             session.putCommit(commit);
 
             assertDoesNotThrow(() -> NettyServer.verifyPushIntegrity(session, commit.getSelfHash()));
@@ -590,7 +607,7 @@ public class NettySyncTest {
         int port = server.getPort();
 
         String missingParentId = "0123456789abcdef0123456789abcdef01234567";
-        Commit commit = new Commit("commit with missing parent", new TreeMap<>(), missingParentId);
+        Commit commit = new Commit("commit with missing parent", new TreeMap<>(), serverInitId, missingParentId);
         String tipHash = commit.contentId();
         commit.setSelfHash(tipHash);
 
@@ -598,7 +615,8 @@ public class NettySyncTest {
                 "master",
                 tipHash,
                 List.of(commit.encode()),
-                Collections.emptyMap()
+                Collections.emptyMap(),
+                serverInitId
         );
 
         SyncMessage resp = sendRawSyncMessage(port, pushMsg);
@@ -631,7 +649,8 @@ public class NettySyncTest {
                 "master",
                 tipHash,
                 List.of(commit.encode()),
-                Collections.emptyMap()
+                Collections.emptyMap(),
+                serverInitId
         );
 
         SyncMessage resp = sendRawSyncMessage(port, pushMsg);
@@ -741,6 +760,280 @@ public class NettySyncTest {
             assertArrayEquals(data1, serverStore.getBlob(blob1));
             assertArrayEquals(data2, serverStore.getBlob(blob2));
             assertArrayEquals(data3, serverStore.getBlob(blob3));
+        }
+    }
+
+    @Test
+    public void testIngestRejectsMismatchedBlobAndCommit(@TempDir Path tempDir) throws Exception {
+        File repoDir = tempDir.resolve(".syncvault").toFile();
+        String initId = initRepo(repoDir);
+        Store.Session session = Store.getDefault();
+
+        byte[] good = "good blob\n".getBytes(StandardCharsets.UTF_8);
+        byte[] evil = "evil blob\n".getBytes(StandardCharsets.UTF_8);
+        String claimed = Utils.hash(good);
+        SyncVaultException blobEx = assertThrows(
+                SyncVaultException.class,
+                () -> NettyServer.ingestBlob(session, claimed, evil, "Push")
+        );
+        assertTrue(blobEx.getMessage().contains("content hash mismatch"));
+        assertTrue(blobEx.getMessage().contains(claimed));
+        assertFalse(session.hasObject(claimed));
+        assertFalse(session.hasObject(Utils.hash(evil)));
+
+        Commit commit = new Commit("stored under the wrong id", new TreeMap<>(), initId);
+        byte[] canonical = commit.encode();
+        String realId = Utils.hash(canonical);
+        commit.setSelfHash(realId);
+        insertRawObject(session, realId, "commit", evil);
+        SyncVaultException commitEx = assertThrows(
+                SyncVaultException.class,
+                () -> NettyServer.ingestCommit(session, canonical, "Push")
+        );
+        assertTrue(commitEx.getMessage().contains("content hash mismatch"));
+        assertTrue(commitEx.getMessage().contains(realId));
+        assertArrayEquals(evil, session.getBlob(realId));
+
+        Commit reachable = new Commit("content addressed", new TreeMap<>(), initId);
+        reachable.setSelfHash(reachable.contentId());
+        session.putCommit(reachable);
+        assertDoesNotThrow(() -> NettyServer.verifyPushIntegrity(session, reachable.getSelfHash()));
+
+        String forged = "deadbeef".repeat(8);
+        insertRawObject(session, forged, "commit", reachable.encode());
+        SyncVaultException forgedEx = assertThrows(
+                SyncVaultException.class,
+                () -> NettyServer.verifyPushIntegrity(session, forged)
+        );
+        assertTrue(forgedEx.getMessage().contains("content hash mismatch"));
+        assertTrue(forgedEx.getMessage().contains(forged));
+    }
+
+    @Test
+    public void testPushRejectsBlobContentHashMismatch(@TempDir Path tempDir) throws Exception {
+        File serverDir = tempDir.resolve("server/.syncvault").toFile();
+        String serverInitId = initRepo(serverDir);
+        server = Repository.serve(0);
+
+        byte[] good = "good blob bytes\n".getBytes(StandardCharsets.UTF_8);
+        byte[] evil = "evil blob bytes\n".getBytes(StandardCharsets.UTF_8);
+        String claimed = Utils.hash(good);
+        TreeMap<String, String> files = new TreeMap<>();
+        files.put("note.txt", claimed);
+        Commit commit = new Commit("claims a blob it does not have", files, serverInitId);
+        byte[] commitBytes = commit.encode();
+        String tip = Utils.hash(commitBytes);
+        Map<String, byte[]> blobs = new LinkedHashMap<>();
+        blobs.put(claimed, evil);
+
+        SyncMessage resp = sendRawSyncMessage(server.getPort(), SyncMessage.pushObjects(
+                "master", tip, List.of(commitBytes), blobs, serverInitId));
+        assertNotNull(resp);
+        assertEquals(SyncMessage.Type.ERROR, resp.type);
+        assertTrue(resp.error.contains("content hash mismatch"), resp.error);
+        assertTrue(resp.error.contains(claimed), resp.error);
+
+        try (Store.Session serverStore = Store.open(serverDir)) {
+            assertEquals(serverInitId, serverStore.getRef("master"));
+            assertFalse(serverStore.hasObject(tip));
+            assertFalse(serverStore.hasObject(claimed));
+            assertFalse(serverStore.hasObject(Utils.hash(evil)));
+        }
+    }
+
+    @Test
+    public void testPushRejectsCommitStoredUnderWrongId(@TempDir Path tempDir) throws Exception {
+        File serverDir = tempDir.resolve("server/.syncvault").toFile();
+        String serverInitId = initRepo(serverDir);
+        Commit commit = new Commit("real commit bytes", new TreeMap<>(), serverInitId);
+        byte[] canonical = commit.encode();
+        String realId = Utils.hash(canonical);
+        String forged = "cafebabe".repeat(8);
+        try (Store.Session serverStore = Store.open(serverDir)) {
+            insertRawObject(serverStore, forged, "commit", canonical);
+        }
+        server = Repository.serve(0);
+
+        SyncMessage resp = sendRawSyncMessage(server.getPort(), SyncMessage.pushObjects(
+                "master", forged, List.of(canonical), Collections.emptyMap(), serverInitId));
+        assertNotNull(resp);
+        assertEquals(SyncMessage.Type.ERROR, resp.type);
+        assertTrue(resp.error.contains("content hash mismatch"), resp.error);
+        assertTrue(resp.error.contains(forged), resp.error);
+
+        try (Store.Session serverStore = Store.open(serverDir)) {
+            assertEquals(serverInitId, serverStore.getRef("master"));
+            assertFalse(serverStore.hasObject(realId), "rolled-back commit must not remain");
+            assertArrayEquals(canonical, serverStore.getBlob(forged));
+        }
+    }
+
+    @Test
+    public void testFetchRejectsMismatchedBlobAndCommitTip(@TempDir Path tempDir) throws Exception {
+        File serverDir = tempDir.resolve("server/.syncvault").toFile();
+        File clientDir = tempDir.resolve("client/.syncvault").toFile();
+        String serverInitId = initRepo(serverDir);
+
+        byte[] good = "fetched good\n".getBytes(StandardCharsets.UTF_8);
+        byte[] evil = "fetched evil\n".getBytes(StandardCharsets.UTF_8);
+        String claimed = Utils.hash(good);
+        TreeMap<String, String> files = new TreeMap<>();
+        files.put("from-server.txt", claimed);
+        Commit blobCommit = new Commit("blob poison", files, serverInitId);
+        blobCommit.setSelfHash(blobCommit.contentId());
+        Commit real = new Commit("commit poison", new TreeMap<>(), serverInitId);
+        byte[] canonical = real.encode();
+        String realId = Utils.hash(canonical);
+        String forged = "ab".repeat(32);
+        try (Store.Session serverStore = Store.open(serverDir)) {
+            insertRawObject(serverStore, claimed, "blob", evil);
+            serverStore.putCommit(blobCommit);
+            serverStore.setRef("master", blobCommit.getSelfHash());
+            insertRawObject(serverStore, forged, "commit", canonical);
+            serverStore.setRef("topic", forged);
+        }
+
+        server = Repository.serve(0);
+        int port = server.getPort();
+        initRepo(clientDir);
+        Repository.add_remote("origin", "127.0.0.1:" + port);
+
+        SyncVaultException blobFetch = assertThrows(
+                SyncVaultException.class,
+                () -> Repository.fetch("origin", "master")
+        );
+        assertTrue(blobFetch.getMessage().contains("content hash mismatch"), blobFetch.getMessage());
+        assertTrue(blobFetch.getMessage().contains(claimed), blobFetch.getMessage());
+        assertFalse(Store.hasObject(blobCommit.getSelfHash()));
+        assertFalse(Store.hasObject(claimed));
+        assertFalse(Store.hasObject(Utils.hash(evil)));
+        assertNull(Store.getRef("origin/master"));
+
+        SyncVaultException commitFetch = assertThrows(
+                SyncVaultException.class,
+                () -> Repository.fetch("origin", "topic")
+        );
+        assertTrue(commitFetch.getMessage().contains("content hash mismatch"), commitFetch.getMessage());
+        assertTrue(commitFetch.getMessage().contains(forged), commitFetch.getMessage());
+        assertFalse(Store.hasObject(realId));
+        assertFalse(Store.hasObject(forged));
+        assertNull(Store.getRef("origin/topic"));
+    }
+
+    @Test
+    public void testPushCreatesBranchWhenExpectedTipAbsent(@TempDir Path tempDir) throws Exception {
+        File serverDir = tempDir.resolve("server/.syncvault").toFile();
+        String serverInitId = initRepo(serverDir);
+        server = Repository.serve(0);
+
+        Commit created = new Commit("new branch", new TreeMap<>(), serverInitId);
+        byte[] bytes = created.encode();
+        String tip = Utils.hash(bytes);
+        SyncMessage createdResp = sendRawSyncMessage(server.getPort(), SyncMessage.pushObjects(
+                "feature", tip, List.of(bytes), Collections.emptyMap(), ""));
+        assertEquals(SyncMessage.Type.ACK, createdResp.type);
+
+        Commit other = new Commit("other new branch", new TreeMap<>(), serverInitId);
+        byte[] otherBytes = other.encode();
+        String otherTip = Utils.hash(otherBytes);
+        SyncMessage otherResp = sendRawSyncMessage(server.getPort(), SyncMessage.pushObjects(
+                "other", otherTip, List.of(otherBytes), Collections.emptyMap(), null));
+        assertEquals(SyncMessage.Type.ACK, otherResp.type);
+
+        try (Store.Session serverStore = Store.open(serverDir)) {
+            assertEquals(serverInitId, serverStore.getRef("master"));
+            assertEquals(tip, serverStore.getRef("feature"));
+            assertEquals(otherTip, serverStore.getRef("other"));
+            assertNotNull(serverStore.getCommit(tip));
+            assertNotNull(serverStore.getCommit(otherTip));
+        }
+    }
+
+    @Test
+    public void testPushRejectsNonFastForward(@TempDir Path tempDir) throws Exception {
+        File serverDir = tempDir.resolve("server/.syncvault").toFile();
+        String serverInitId = initRepo(serverDir);
+        server = Repository.serve(0);
+
+        Commit sideways = new Commit("unrelated root", new TreeMap<>(), null);
+        byte[] bytes = sideways.encode();
+        String tip = Utils.hash(bytes);
+        SyncMessage resp = sendRawSyncMessage(server.getPort(), SyncMessage.pushObjects(
+                "master", tip, List.of(bytes), Collections.emptyMap(), serverInitId));
+        assertNotNull(resp);
+        assertEquals(SyncMessage.Type.ERROR, resp.type);
+        assertTrue(resp.error.contains("not a fast-forward"), resp.error);
+
+        try (Store.Session serverStore = Store.open(serverDir)) {
+            assertEquals(serverInitId, serverStore.getRef("master"));
+            assertFalse(serverStore.hasObject(tip));
+        }
+    }
+
+    @Test
+    public void testRacingPushesCannotOverwriteTip(@TempDir Path tempDir) throws Exception {
+        File serverDir = tempDir.resolve("server/.syncvault").toFile();
+        String base = initRepo(serverDir);
+        server = Repository.serve(0);
+        int port = server.getPort();
+
+        Commit left = new Commit("left racer", new TreeMap<>(), base);
+        Commit right = new Commit("right racer", new TreeMap<>(), base);
+        byte[] leftBytes = left.encode();
+        byte[] rightBytes = right.encode();
+        String leftTip = Utils.hash(leftBytes);
+        String rightTip = Utils.hash(rightBytes);
+        SyncMessage leftPush = SyncMessage.pushObjects(
+                "master", leftTip, List.of(leftBytes), Collections.emptyMap(), base);
+        SyncMessage rightPush = SyncMessage.pushObjects(
+                "master", rightTip, List.of(rightBytes), Collections.emptyMap(), base);
+
+        CyclicBarrier ready = new CyclicBarrier(2);
+        AtomicReference<SyncMessage> leftResp = new AtomicReference<>();
+        AtomicReference<SyncMessage> rightResp = new AtomicReference<>();
+        AtomicReference<Throwable> leftError = new AtomicReference<>();
+        AtomicReference<Throwable> rightError = new AtomicReference<>();
+        Thread leftThread = new Thread(() -> {
+            try {
+                leftResp.set(sendRawSyncMessage(port, leftPush, ready));
+            } catch (Throwable t) {
+                leftError.set(t);
+            }
+        });
+        Thread rightThread = new Thread(() -> {
+            try {
+                rightResp.set(sendRawSyncMessage(port, rightPush, ready));
+            } catch (Throwable t) {
+                rightError.set(t);
+            }
+        });
+        leftThread.start();
+        rightThread.start();
+        leftThread.join(20_000);
+        rightThread.join(20_000);
+        assertFalse(leftThread.isAlive());
+        assertFalse(rightThread.isAlive());
+        assertNull(leftError.get());
+        assertNull(rightError.get());
+
+        List<SyncMessage> responses = List.of(leftResp.get(), rightResp.get());
+        assertEquals(1, responses.stream().filter(m -> m.type == SyncMessage.Type.ACK).count());
+        SyncMessage rejected = responses.stream()
+                .filter(m -> m.type == SyncMessage.Type.ERROR)
+                .findFirst()
+                .orElseThrow();
+        assertTrue(rejected.error.contains("expected tip"), rejected.error);
+        assertTrue(rejected.error.contains(base), rejected.error);
+
+        try (Store.Session serverStore = Store.open(serverDir)) {
+            String winner = serverStore.getRef("master");
+            assertTrue(leftTip.equals(winner) || rightTip.equals(winner), winner);
+            String loser = leftTip.equals(winner) ? rightTip : leftTip;
+            Commit stored = serverStore.getCommit(winner);
+            assertNotNull(stored);
+            assertEquals(base, stored.getParent());
+            assertTrue(serverStore.ancestors(winner).containsKey(base));
+            assertFalse(serverStore.hasObject(loser));
         }
     }
 }

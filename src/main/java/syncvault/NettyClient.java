@@ -94,23 +94,34 @@ public class NettyClient {
             }
 
             Store.begin();
-            if (objResp.commits != null) {
-                for (byte[] commitBytes : objResp.commits) {
-                    Commit c = SyncMessage.deserializeCommit(commitBytes);
-                    if (!Store.hasObject(c.getSelfHash())) {
-                        Store.putCommit(c);
+            try {
+                if (objResp.commits != null) {
+                    for (byte[] commitBytes : objResp.commits) {
+                        NettyServer.ingestCommit(Store.getDefault(), commitBytes, "Fetch");
                     }
                 }
-            }
-            if (objResp.blobs != null) {
-                for (Map.Entry<String, byte[]> entry : objResp.blobs.entrySet()) {
-                    if (!Store.hasObject(entry.getKey())) {
-                        Store.putBlob(entry.getKey(), entry.getValue());
+                if (objResp.blobs != null) {
+                    for (Map.Entry<String, byte[]> entry : objResp.blobs.entrySet()) {
+                        NettyServer.ingestBlob(Store.getDefault(), entry.getKey(), entry.getValue(), "Fetch");
                     }
                 }
+                byte[] tipBytes = Store.getBlob(remoteHead);
+                if (tipBytes == null || !Utils.hash(tipBytes).equals(remoteHead)) {
+                    throw new SyncVaultException(
+                            "Fetch rejected: tip " + remoteHead + " content hash mismatch.");
+                }
+                Store.setRef(remoteName + "/" + branchName, remoteHead);
+                Store.commitTx();
+            } catch (Throwable ingestError) {
+                Store.rollback();
+                if (ingestError instanceof RuntimeException) {
+                    throw (RuntimeException) ingestError;
+                }
+                if (ingestError instanceof Error) {
+                    throw (Error) ingestError;
+                }
+                throw new SyncVaultException(ingestError.getMessage());
             }
-            Store.setRef(remoteName + "/" + branchName, remoteHead);
-            Store.commitTx();
 
             ch.writeAndFlush(SyncMessage.ack()).syncUninterruptibly();
         } catch (InterruptedException e) {
@@ -224,7 +235,7 @@ public class NettyClient {
             }
 
             SyncMessage pushResp = handler.request(ch,
-                    SyncMessage.pushObjects(branchName, localHead, commits, blobs));
+                    SyncMessage.pushObjects(branchName, localHead, commits, blobs, remoteHead));
             if (pushResp == null) {
                 exitMessage = "Network error.";
             } else if (pushResp.type == SyncMessage.Type.ERROR) {

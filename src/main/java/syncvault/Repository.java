@@ -758,8 +758,7 @@ public class Repository {
         // 9. Create merge commit
         String commitMessage = "Merged " + branch + " into " + curr_Head + ".";
         Commit mergeCommit = new Commit(commitMessage, newCommitMap, current_head_hash, branch_head_hash);
-        byte[] text = serialize(mergeCommit);
-        mergeCommit.setSelfHash(Utils.hash(text));
+        mergeCommit.setSelfHash(mergeCommit.contentId());
 
         Store.putCommit(mergeCommit);
 

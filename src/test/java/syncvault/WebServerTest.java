@@ -74,7 +74,7 @@ public class WebServerTest {
         TreeMap<String, String> mergedFiles = new TreeMap<>(Commit.getCommitFiles_map(c3));
         mergedFiles.put("bin.dat", binHash);
         Commit mergeCommit = new Commit("Merged feature into master.", mergedFiles, c3, c2);
-        mergeCommit.setSelfHash(Utils.hash(Utils.serialize(mergeCommit)));
+        mergeCommit.setSelfHash(mergeCommit.contentId());
         Store.putCommit(mergeCommit);
         String c4 = mergeCommit.getSelfHash();
         Store.setRef("master", c4);
@@ -230,7 +230,7 @@ public class WebServerTest {
         TreeMap<String, String> mergedFiles = new TreeMap<>();
         mergedFiles.put("app.txt", mergedHash);
         Commit mergeCommit = new Commit("Merged other into master.", mergedFiles, cOurs, cTheirs);
-        mergeCommit.setSelfHash(Utils.hash(Utils.serialize(mergeCommit)));
+        mergeCommit.setSelfHash(mergeCommit.contentId());
         Store.putCommit(mergeCommit);
         String cMerge = mergeCommit.getSelfHash();
         Store.setRef("master", cMerge);
@@ -320,7 +320,7 @@ public class WebServerTest {
         TreeMap<String, String> mergedFiles = new TreeMap<>();
         mergedFiles.put("app.txt", mergedHash);
         Commit mergeCommit = new Commit("Merged other into master.", mergedFiles, cOurs, cTheirs);
-        mergeCommit.setSelfHash(Utils.hash(Utils.serialize(mergeCommit)));
+        mergeCommit.setSelfHash(mergeCommit.contentId());
         Store.putCommit(mergeCommit);
         String cMerge = mergeCommit.getSelfHash();
         Store.setRef("master", cMerge);

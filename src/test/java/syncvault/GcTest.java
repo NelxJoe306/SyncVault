@@ -174,7 +174,7 @@ public class GcTest {
         mergedMap.put("feature.txt", featureBlob);
         mergedMap.put("master.txt", masterBlob);
         Commit mergeCommit = new Commit("Merged feature into master.", mergedMap, cMaster, cFeature);
-        mergeCommit.setSelfHash(Utils.hash(Utils.serialize(mergeCommit)));
+        mergeCommit.setSelfHash(mergeCommit.contentId());
         Store.putCommit(mergeCommit);
         String cMerge = mergeCommit.getSelfHash();
         Store.setRef("master", cMerge);
@@ -188,7 +188,7 @@ public class GcTest {
         TreeMap<String, String> remoteMap = new TreeMap<>();
         remoteMap.put("release.txt", remoteBlob);
         Commit remoteCommit = new Commit("release commit", remoteMap, c0);
-        remoteCommit.setSelfHash(Utils.hash(Utils.serialize(remoteCommit)));
+        remoteCommit.setSelfHash(remoteCommit.contentId());
         Store.putCommit(remoteCommit);
         Store.setRef("origin/release", remoteCommit.getSelfHash());
 
@@ -197,7 +197,7 @@ public class GcTest {
         TreeMap<String, String> detachedMap = new TreeMap<>();
         detachedMap.put("detached.txt", detachedBlob);
         Commit detachedCommit = new Commit("detached commit", detachedMap, c0);
-        detachedCommit.setSelfHash(Utils.hash(Utils.serialize(detachedCommit)));
+        detachedCommit.setSelfHash(detachedCommit.contentId());
         Store.putCommit(detachedCommit);
         Store.setHead(detachedCommit.getSelfHash()); // detached HEAD pointing directly to commit hash
 
@@ -206,7 +206,7 @@ public class GcTest {
         TreeMap<String, String> deadMap = new TreeMap<>();
         deadMap.put("dead.txt", deadBlob);
         Commit deadCommit = new Commit("dead commit", deadMap, c0);
-        deadCommit.setSelfHash(Utils.hash(Utils.serialize(deadCommit)));
+        deadCommit.setSelfHash(deadCommit.contentId());
         Store.putCommit(deadCommit);
 
         Store.GcResult res = Store.gc();

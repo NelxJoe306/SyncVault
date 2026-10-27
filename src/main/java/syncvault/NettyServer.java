@@ -285,7 +285,7 @@ public class NettyServer implements AutoCloseable {
                         Commit c = session.getCommit(id);
                         if (c != null) {
                             if (!have.contains(id)) {
-                                commits.add(Utils.serialize(c));
+                                commits.add(c.encode());
                                 for (String blobHash : c.getNameToHash().values()) {
                                     if (!blobs.containsKey(blobHash)) {
                                         byte[] remoteBlob = session.getBlob(blobHash);

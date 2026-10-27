@@ -30,7 +30,7 @@
 
 ## 提交 id 和时间
 
-提交 id 是「`self_hash` 还没填进去」时，序列化字节的 SHA-1。时间存的是 `long` 毫秒，初始提交是 `0`。`returnInfo()` 显示的时候才用 `EEE MMM d HH:mm:ss yyyy Z` 和本机时区格式化。所以同一份初始提交在不同时区下 id 一样，`log` 上的日期字符串按本地时区变。blob id 是文件字节的 SHA-1。
+提交 id 是 SVC1 规范编码（不含 `self_hash`）的哈希，默认 SHA-256。时间存的是 `long` 毫秒，初始提交是 `0`。`returnInfo()` 显示的时候才用 `EEE MMM d HH:mm:ss yyyy Z` 和本机时区格式化。所以同一份初始提交在不同时区下 id 一样，`log` 上的日期字符串按本地时区变。blob id 是文件字节的哈希。
 
 ## add、commit、rm
 
@@ -63,7 +63,7 @@ merge 的八条规则还在 `Repository.merge` 里：当前和给定相同就保
 远程支持两种地址形式：
 1. **本地路径远程（Path Remote）**：形如 `../D1/.syncvault` 的本地文件系统目录，直接通过 `Store.open(remoteSyncvault)` 打开远端 SQLite 会话并在单个事务内拷贝缺失的 Commit 与 Blob。
 2. **Netty TCP / TLS 网络远程（Network Remote）**：形如 `host:port`、`netty://host:port`（明文 TCP）或 `nettys://host:port`（TLS 加密，由 `Repository.isNetworkRemote` 识别）。远端通过 `serve [port]`（默认端口 `9418`）启动 `NettyServer`，客户端 `push` / `fetch` / `pull` 通过 `NettyClient` 建立连接。
-   - **传输帧与协议（`SyncMessage`）**：基于 Netty `LengthFieldBasedFrameDecoder` / `LengthFieldPrepender`（4 字节长度前缀）与 Java 序列化消息传输。
+   - **传输帧与协议（`SyncMessage`）**：基于 Netty `LengthFieldBasedFrameDecoder` / `LengthFieldPrepender`（4 字节长度前缀）。帧体是 SVM1 显式字段编码，不是 Java 序列化。其中的 commit 载荷是 SVC1 字节。
    - **共享令牌鉴权（Token Auth）**：通过 `--token`、环境变量 `SYNCVAULT_SYNC_TOKEN` 或仓库文件 `.syncvault/sync-token`（优先级：`--token` > `SYNCVAULT_SYNC_TOKEN` > `.syncvault/sync-token`）配置令牌。服务端配置令牌后，要求客户端 `HELLO` 携带相同令牌（使用 `MessageDigest.isEqual` 常量时间比对），缺失或错误时返回 `ERROR("Authentication failed: invalid or missing sync token.")` 并拒绝后续 `PUSH_*` / `FETCH_*` 操作；未配置令牌时默认免密以保持向后兼容。本地目录远程不受令牌影响。
    - **可选 TLS 加密**：服务端提供 `--tls-cert` + `--tls-key`（或 `SYNCVAULT_TLS_CERT` + `SYNCVAULT_TLS_KEY`）时在管线最前端挂载 `SslHandler`。客户端使用 `nettys://host:port` 或显式 TLS 参数时启用 `SslContext`，支持自定义受信任证书（`--tls-ca` / `SYNCVAULT_TLS_CA` / `.syncvault/tls-ca.pem`）或显式 `--tls-insecure`（`SYNCVAULT_TLS_INSECURE=true`）。
    - **Fetch 流程**：`HELLO` / `HELLO_OK` 握手后，客户端发送 `FETCH_REQ(branch)`；服务端返回 `FETCH_TIP(tip)`（若分支不存在则返回 `ERROR`，客户端打印 `That remote does not have that branch.`）；客户端发送本地已有的提交哈希集合 `FETCH_HAVE`，服务端通过 BFS 计算缺失的 Commit 序列化字节及关联 Blob 并以 `FETCH_OBJECTS` 返回；客户端在单一 SQLite 事务中写入对象并更新 `ref/<remote>/<branch>`，最后回复 `ACK`。
@@ -111,7 +111,7 @@ merge 的八条规则还在 `Repository.merge` 里：当前和给定相同就保
 ### 1. 数据库表结构 (Schema)
 
 ```sql
--- 存储版本库核心对象：blob 原文与序列化后的 Commit（写入前已设置 self_hash，与旧版 writeObject 字节完全一致）
+-- 存储版本库核心对象：blob 原文，以及 SVC1 编码的 Commit（self_hash 不在字节里，id 是这些字节的哈希）
 CREATE TABLE IF NOT EXISTS object (
     hash TEXT PRIMARY KEY,
     type TEXT NOT NULL,
@@ -245,12 +245,41 @@ SyncVault 定位于多设备分布式资产同步与版本控制系统：
 4. **强 ACID 事务与可靠性**：SQLite 经过长期工业验证，提供完整的 ACID 事务与崩溃恢复能力，在进程异常退出时不会造成元数据损坏。
 5. **便捷备份与迁移**：复制或同步单个 `.syncvault/syncvault.db` 文件即可完成整个版本库元数据的迁移与备份。
 
-### 7. 提交 ID 与内容哈希保持不变
+### 7. 提交 ID 与 SVC1 / SVM1 编码
 
-- Commit ID 的计算机制完全保持不变：在 `self_hash` 字段为 `null` 时序列化该 Commit 对象，并计算其内容哈希（`Utils.hash(Utils.serialize(commit))`）。
-- Java 序列化字节里包含类的 `serialVersionUID`。为了让存储层访问提交信息，`Commit` 新增了 `getMessage()` / `getTimestamp()`，这会改变 Java 自动计算的 UID，从而改变所有 commit id。因此 `Commit` 显式固定 `serialVersionUID = -1296720244208386047L`，包名统一为 `syncvault` 后的初始提交 id 为 `860367ca…2198`（有单元测试 `CommitIdTest` 守护）。
-- Blob ID 依然严格等于文件原始字节的内容哈希（`Utils.hash(fileBytes)`）。
-- 对象寻址机制保证了计算的纯粹性与可验证性。
+`Store.getCommit` 和 `SyncMessage.deserializeCommit` 只调用 `Commit.decode`。Netty `Codec` 只调用 `SyncMessage.decode` / `encode`。这些路径上没有 `ObjectInputStream.readObject`。
+
+**SVC1（commit，大端）**
+
+```
+magic          4 bytes   'S' 'V' 'C' '1'
+version        uint16    1
+timestamp      int64     epoch 毫秒
+message        可空字符串
+parent         可空字符串
+secondParent   可空字符串
+fileCount      uint32
+files          重复 fileCount 次：文件名、blob id（都是非空字符串）
+               顺序是 TreeMap 自然序（Java String.compareTo）
+```
+
+可空字符串：`uint8` 标志（0 = null，1 = 存在），然后是字符串。字符串：`uint32` 字节长度 + UTF-8（非法 UTF-8 直接拒绝）。`self_hash` 不在这组字节里。
+
+- 提交 id = 当前 `HashFunction` 对这段规范字节的哈希（默认 SHA-256，`Commit.contentId()`）。时间戳为 0、说明为 `initial commit`、没有父提交、文件表为空的初始提交 id 是 `09dcbc6680373bdb509a1d45ba888bf89ade8780bbfe9bba9e19fcbcf1ef4d02`（`CommitIdTest`）。
+- `Store.putCommit` 把 `Commit.encode()` 写入 `object.data`，主键是调用方设置的 id。正常提交用 `contentId()`。`getCommit` 解码后再把 `self_hash` 设成主键，所以测试里人为指定的 id 仍能读回。
+- 线上的 commit 载荷就是同一段 SVC1 字节。`deserializeCommit` 解码后把 `self_hash` 设成 `contentId()`，不信任对端另报的 id。
+- 字节必须以规范形式出现（文件名按 TreeMap 顺序、没有尾部垃圾）。`0xACED` 开头的 Java 序列化会被拒绝，不会进入 `readObject`。
+- Blob id 仍是文件原始字节的哈希。
+
+**SVM1（同步消息，大端）**
+
+魔数 `'S' 'V' 'M' '1'`，`uint16` 版本 1，然后是固定的 type 编号（1 HELLO … 11 ERROR，不使用 `enum.ordinal()`）。后面依次是 branch、tipHash、error、token（均可空）、hashes（可空的字符串列表，写出时按字典序）、commits（可空的字节数组列表，元素是 SVC1）、blobs（可空的 id + 字节列表）。null 和空集合用标志字节区分。长度帧仍然是 Netty 的 4 字节前缀。
+
+**0.1.0-SNAPSHOT 的迁移（不兼容旧库）**
+
+旧提交 id 是 Java 序列化字节的 SHA-256，和 SVC1 id 不是同一个值。已经写进 `.syncvault/syncvault.db` 的 `0xACED` 对象不会被自动改写，`getCommit` 读到它们会直接失败。请重新 `init`。协议也不再接受 Java 序列化的 `SyncMessage`，两端都要是这个版本。
+
+可选的离线只读入口是 `LegacyCommitReader.read`。它只用带 `ObjectInputFilter` 的 `ObjectInputStream`（允许 `syncvault.Commit`、`java.util.TreeMap`、`java.lang.String`）查看旧 blob。`getCommit`、`deserializeCommit` 和 Netty 服务端都不会调用它。即便读出来，新 id 也变了，分支指针不会跟着改。不要把这个方法接到网络输入上。
 
 ### 8. 垃圾回收 (Garbage Collection, `gc`)
 

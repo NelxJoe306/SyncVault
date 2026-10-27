@@ -225,7 +225,13 @@ public class NettyClient {
 
             SyncMessage pushResp = handler.request(ch,
                     SyncMessage.pushObjects(branchName, localHead, commits, blobs));
-            if (pushResp == null || pushResp.type != SyncMessage.Type.ACK) {
+            if (pushResp == null) {
+                exitMessage = "Network error.";
+            } else if (pushResp.type == SyncMessage.Type.ERROR) {
+                exitMessage = (pushResp.error != null && !pushResp.error.isEmpty())
+                        ? pushResp.error
+                        : "Push rejected by remote.";
+            } else if (pushResp.type != SyncMessage.Type.ACK) {
                 exitMessage = "Network error.";
             }
         } catch (InterruptedException e) {
@@ -421,7 +427,7 @@ public class NettyClient {
         return (curr.getMessage() != null) ? curr.getMessage() : curr.getClass().getSimpleName();
     }
 
-    private static class ClientHandler extends SimpleChannelInboundHandler<SyncMessage> {
+    static class ClientHandler extends SimpleChannelInboundHandler<SyncMessage> {
         private final BlockingQueue<SyncMessage> inbox = new LinkedBlockingQueue<>();
 
         SyncMessage request(Channel ch, SyncMessage req) throws InterruptedException {

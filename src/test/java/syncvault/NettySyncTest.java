@@ -6,7 +6,14 @@ import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
+import io.netty.bootstrap.Bootstrap;
 import io.netty.buffer.UnpooledByteBufAllocator;
+import io.netty.channel.*;
+import io.netty.channel.nio.NioEventLoopGroup;
+import io.netty.channel.socket.SocketChannel;
+import io.netty.channel.socket.nio.NioSocketChannel;
+import io.netty.handler.codec.LengthFieldBasedFrameDecoder;
+import io.netty.handler.codec.LengthFieldPrepender;
 import io.netty.handler.ssl.SslContext;
 
 import javax.net.ssl.SSLEngine;
@@ -19,6 +26,9 @@ import java.security.Key;
 import java.security.KeyStore;
 import java.security.cert.Certificate;
 import java.util.Base64;
+
+import java.util.*;
+import java.util.concurrent.TimeUnit;
 
 import static org.junit.jupiter.api.Assertions.*;
 
@@ -479,5 +489,263 @@ public class NettySyncTest {
 
         Repository.fetch("origin", "master", null, null, true);
         assertEquals(serverInitId, Store.getRef("origin/master"));
+    }
+
+    private SyncMessage sendRawSyncMessage(int port, SyncMessage message) throws Exception {
+        EventLoopGroup group = new NioEventLoopGroup(1);
+        Channel ch = null;
+        try {
+            NettyClient.ClientHandler handler = new NettyClient.ClientHandler();
+            Bootstrap b = new Bootstrap();
+            b.group(group)
+                    .channel(NioSocketChannel.class)
+                    .option(ChannelOption.CONNECT_TIMEOUT_MILLIS, 5000)
+                    .handler(new ChannelInitializer<SocketChannel>() {
+                        @Override
+                        protected void initChannel(SocketChannel sc) {
+                            sc.pipeline().addLast(
+                                    new LengthFieldBasedFrameDecoder(NettyServer.MAX_FRAME_BYTES, 0, 4, 0, 4),
+                                    new LengthFieldPrepender(4),
+                                    new SyncMessage.Codec(),
+                                    handler
+                            );
+                        }
+                    });
+            ch = b.connect("127.0.0.1", port).sync().channel();
+            handler.request(ch, SyncMessage.hello(null));
+            return handler.request(ch, message);
+        } finally {
+            if (ch != null) {
+                ch.close().syncUninterruptibly();
+            }
+            group.shutdownGracefully(0, 1, TimeUnit.SECONDS).syncUninterruptibly();
+        }
+    }
+
+    @Test
+    public void testVerifyPushIntegrityMissingParent(@TempDir Path tempDir) throws Exception {
+        File repoDir = tempDir.resolve(".syncvault").toFile();
+        initRepo(repoDir);
+        try (Store.Session session = Store.open(repoDir)) {
+            String missingParentId = "1111222233334444555566667777888899990000";
+            Commit orphan = new Commit("orphan commit", new TreeMap<>(), missingParentId);
+            byte[] orphanBytes = Utils.serialize(orphan);
+            orphan.setSelfHash(Utils.hash(orphanBytes));
+            session.putCommit(orphan);
+
+            SyncVaultException ex = assertThrows(
+                    SyncVaultException.class,
+                    () -> NettyServer.verifyPushIntegrity(session, orphan.getSelfHash())
+            );
+            assertTrue(ex.getMessage().contains("missing commit " + missingParentId));
+        }
+    }
+
+    @Test
+    public void testVerifyPushIntegrityMissingBlob(@TempDir Path tempDir) throws Exception {
+        File repoDir = tempDir.resolve(".syncvault").toFile();
+        String initId = initRepo(repoDir);
+        try (Store.Session session = Store.open(repoDir)) {
+            String missingBlobHash = "aaaabbbbccccddddeeeeffff0000111122223333";
+            TreeMap<String, String> map = new TreeMap<>();
+            map.put("file.txt", missingBlobHash);
+            Commit commitWithMissingBlob = new Commit("commit missing blob", map, initId);
+            byte[] bytes = Utils.serialize(commitWithMissingBlob);
+            commitWithMissingBlob.setSelfHash(Utils.hash(bytes));
+            session.putCommit(commitWithMissingBlob);
+
+            SyncVaultException ex = assertThrows(
+                    SyncVaultException.class,
+                    () -> NettyServer.verifyPushIntegrity(session, commitWithMissingBlob.getSelfHash())
+            );
+            assertTrue(ex.getMessage().contains("missing blob " + missingBlobHash));
+        }
+    }
+
+    @Test
+    public void testVerifyPushIntegrityHappyPath(@TempDir Path tempDir) throws Exception {
+        File repoDir = tempDir.resolve(".syncvault").toFile();
+        String initId = initRepo(repoDir);
+        try (Store.Session session = Store.open(repoDir)) {
+            byte[] content = "valid content".getBytes(StandardCharsets.UTF_8);
+            String blobHash = Utils.hash(content);
+            session.putBlob(blobHash, content);
+
+            TreeMap<String, String> map = new TreeMap<>();
+            map.put("valid.txt", blobHash);
+            Commit commit = new Commit("valid commit", map, initId);
+            byte[] bytes = Utils.serialize(commit);
+            commit.setSelfHash(Utils.hash(bytes));
+            session.putCommit(commit);
+
+            assertDoesNotThrow(() -> NettyServer.verifyPushIntegrity(session, commit.getSelfHash()));
+        }
+    }
+
+    @Test
+    public void testNettyPushRejectsMissingParent(@TempDir Path tempDir) throws Exception {
+        File serverDir = tempDir.resolve("server/.syncvault").toFile();
+        String serverInitId = initRepo(serverDir);
+        server = Repository.serve(0);
+        int port = server.getPort();
+
+        String missingParentId = "0123456789abcdef0123456789abcdef01234567";
+        Commit commit = new Commit("commit with missing parent", new TreeMap<>(), missingParentId);
+        byte[] commitBytes = Utils.serialize(commit);
+        String tipHash = Utils.hash(commitBytes);
+        commit.setSelfHash(tipHash);
+
+        SyncMessage pushMsg = SyncMessage.pushObjects(
+                "master",
+                tipHash,
+                List.of(Utils.serialize(commit)),
+                Collections.emptyMap()
+        );
+
+        SyncMessage resp = sendRawSyncMessage(port, pushMsg);
+        assertNotNull(resp);
+        assertEquals(SyncMessage.Type.ERROR, resp.type);
+        assertTrue(resp.error.contains("missing commit " + missingParentId),
+                "Expected missing commit error but got: " + resp.error);
+
+        try (Store.Session serverStore = Store.open(serverDir)) {
+            assertEquals(serverInitId, serverStore.getRef("master"), "Remote tip must not change on failure");
+            assertFalse(serverStore.hasObject(tipHash), "Uncommitted commit should have been rolled back");
+        }
+    }
+
+    @Test
+    public void testNettyPushRejectsMissingBlob(@TempDir Path tempDir) throws Exception {
+        File serverDir = tempDir.resolve("server/.syncvault").toFile();
+        String serverInitId = initRepo(serverDir);
+        server = Repository.serve(0);
+        int port = server.getPort();
+
+        String missingBlobHash = "fedcba9876543210fedcba9876543210fedcba98";
+        TreeMap<String, String> fileMap = new TreeMap<>();
+        fileMap.put("ghost.txt", missingBlobHash);
+        Commit commit = new Commit("commit with missing blob", fileMap, serverInitId);
+        byte[] commitBytes = Utils.serialize(commit);
+        String tipHash = Utils.hash(commitBytes);
+        commit.setSelfHash(tipHash);
+
+        SyncMessage pushMsg = SyncMessage.pushObjects(
+                "master",
+                tipHash,
+                List.of(Utils.serialize(commit)),
+                Collections.emptyMap()
+        );
+
+        SyncMessage resp = sendRawSyncMessage(port, pushMsg);
+        assertNotNull(resp);
+        assertEquals(SyncMessage.Type.ERROR, resp.type);
+        assertTrue(resp.error.contains("missing blob " + missingBlobHash),
+                "Expected missing blob error but got: " + resp.error);
+
+        try (Store.Session serverStore = Store.open(serverDir)) {
+            assertEquals(serverInitId, serverStore.getRef("master"), "Remote tip must not change on failure");
+            assertFalse(serverStore.hasObject(tipHash), "Uncommitted commit should have been rolled back");
+        }
+    }
+
+    @Test
+    public void testNettyPushClientThrowsClearErrorOnMissingObject(@TempDir Path tempDir) throws Exception {
+        File serverDir = tempDir.resolve("server/.syncvault").toFile();
+        File clientDir = tempDir.resolve("client/.syncvault").toFile();
+
+        String serverInitId = initRepo(serverDir);
+        server = Repository.serve(0);
+        int port = server.getPort();
+
+        initRepo(clientDir);
+        Repository.add_remote("origin", "127.0.0.1:" + port);
+
+        byte[] content = "corrupted blob test".getBytes(StandardCharsets.UTF_8);
+        String blobHash = Utils.hash(content);
+        Store.putBlob(blobHash, content);
+        Store.stageAdd("corrupt.txt", blobHash);
+        String clientCommitId = Commit.commitInCurrBran("commit with soon-deleted blob");
+
+        // Delete blob from client store to simulate missing blob during push
+        Store.deleteObjects(List.of(blobHash));
+        assertFalse(Store.hasObject(blobHash));
+
+        SyncVaultException ex = assertThrows(
+                SyncVaultException.class,
+                () -> Repository.push("origin", "master")
+        );
+        assertTrue(ex.getMessage().contains("missing blob " + blobHash),
+                "Expected clear server error propagated to client but got: " + ex.getMessage());
+
+        try (Store.Session serverStore = Store.open(serverDir)) {
+            assertEquals(serverInitId, serverStore.getRef("master"), "Server ref must not update");
+            assertFalse(serverStore.hasObject(clientCommitId), "Server must not retain uncommitted commit");
+        }
+    }
+
+    @Test
+    public void testNettyPushHappyPathMultiCommitAndMerge(@TempDir Path tempDir) throws Exception {
+        File serverDir = tempDir.resolve("server/.syncvault").toFile();
+        File clientDir = tempDir.resolve("client/.syncvault").toFile();
+
+        initRepo(serverDir);
+        server = Repository.serve(0);
+        int port = server.getPort();
+
+        String initId = initRepo(clientDir);
+        Repository.add_remote("origin", "127.0.0.1:" + port);
+
+        // Commit 1 (parent: initId)
+        byte[] data1 = "file 1 data".getBytes(StandardCharsets.UTF_8);
+        String blob1 = Utils.hash(data1);
+        Store.putBlob(blob1, data1);
+        TreeMap<String, String> map1 = new TreeMap<>();
+        map1.put("file1.txt", blob1);
+        Commit commit1 = new Commit("commit 1", map1, initId);
+        byte[] c1Bytes = Utils.serialize(commit1);
+        String c1 = Utils.hash(c1Bytes);
+        commit1.setSelfHash(c1);
+        Store.putCommit(commit1);
+
+        // Commit 2 (parent: initId) on separate branch
+        byte[] data2 = "file 2 data".getBytes(StandardCharsets.UTF_8);
+        String blob2 = Utils.hash(data2);
+        Store.putBlob(blob2, data2);
+        TreeMap<String, String> map2 = new TreeMap<>();
+        map2.put("file2.txt", blob2);
+        Commit commit2 = new Commit("commit 2", map2, initId);
+        byte[] c2Bytes = Utils.serialize(commit2);
+        String c2 = Utils.hash(c2Bytes);
+        commit2.setSelfHash(c2);
+        Store.putCommit(commit2);
+
+        // Merge commit with two parents (c1 and c2)
+        byte[] data3 = "file 3 data".getBytes(StandardCharsets.UTF_8);
+        String blob3 = Utils.hash(data3);
+        Store.putBlob(blob3, data3);
+        TreeMap<String, String> mergeMap = new TreeMap<>();
+        mergeMap.put("file1.txt", blob1);
+        mergeMap.put("file2.txt", blob2);
+        mergeMap.put("file3.txt", blob3);
+        Commit mergeCommit = new Commit("merge commit", mergeMap, c1, c2);
+        byte[] mergeBytes = Utils.serialize(mergeCommit);
+        String mergeTip = Utils.hash(mergeBytes);
+        mergeCommit.setSelfHash(mergeTip);
+        Store.putCommit(mergeCommit);
+        Store.setRef("master", mergeTip);
+        Repository.currHead = mergeTip;
+
+        // Push to remote
+        Repository.push("origin", "master");
+
+        try (Store.Session serverStore = Store.open(serverDir)) {
+            assertEquals(mergeTip, serverStore.getRef("master"), "Server master tip should match merge tip");
+            assertTrue(serverStore.hasObject(c1), "Server should have c1");
+            assertTrue(serverStore.hasObject(c2), "Server should have c2");
+            assertTrue(serverStore.hasObject(mergeTip), "Server should have merge commit");
+            assertArrayEquals(data1, serverStore.getBlob(blob1));
+            assertArrayEquals(data2, serverStore.getBlob(blob2));
+            assertArrayEquals(data3, serverStore.getBlob(blob3));
+        }
     }
 }

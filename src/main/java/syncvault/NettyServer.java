@@ -321,6 +321,9 @@ public class NettyServer implements AutoCloseable {
         private void handlePushObjects(ChannelHandlerContext ctx, SyncMessage msg) {
             session.begin();
             try {
+                if (msg.branch == null || msg.branch.isEmpty()) {
+                    throw new SyncVaultException("Push rejected: branch name cannot be empty.");
+                }
                 if (msg.commits != null) {
                     for (byte[] commitBytes : msg.commits) {
                         Commit c = SyncMessage.deserializeCommit(commitBytes);
@@ -336,6 +339,7 @@ public class NettyServer implements AutoCloseable {
                         }
                     }
                 }
+                verifyPushIntegrity(session, msg.tipHash);
                 session.setRef(msg.branch, msg.tipHash);
                 session.commitTx();
                 ctx.writeAndFlush(SyncMessage.ack());
@@ -348,6 +352,46 @@ public class NettyServer implements AutoCloseable {
         @Override
         public void exceptionCaught(ChannelHandlerContext ctx, Throwable cause) {
             ctx.close();
+        }
+    }
+
+    static void verifyPushIntegrity(Store.Session session, String tipHash) {
+        if (tipHash == null || tipHash.isEmpty()) {
+            throw new SyncVaultException("Push rejected: missing tip commit.");
+        }
+        Queue<String> queue = new ArrayDeque<>();
+        Set<String> visitedCommits = new HashSet<>();
+        Set<String> verifiedBlobs = new HashSet<>();
+
+        queue.add(tipHash);
+        visitedCommits.add(tipHash);
+
+        while (!queue.isEmpty()) {
+            String commitHash = queue.poll();
+            Commit commit = session.getCommit(commitHash);
+            if (commit == null) {
+                throw new SyncVaultException("Push rejected: missing commit " + commitHash);
+            }
+            if (commit.getNameToHash() != null) {
+                for (String blobHash : commit.getNameToHash().values()) {
+                    if (blobHash == null || blobHash.isEmpty()) {
+                        throw new SyncVaultException("Push rejected: missing blob " + blobHash);
+                    }
+                    if (verifiedBlobs.add(blobHash)) {
+                        if (!session.hasObject(blobHash)) {
+                            throw new SyncVaultException("Push rejected: missing blob " + blobHash);
+                        }
+                    }
+                }
+            }
+            String p1 = commit.getParent();
+            if (p1 != null && !p1.isEmpty() && visitedCommits.add(p1)) {
+                queue.add(p1);
+            }
+            String p2 = commit.getSecondParent();
+            if (p2 != null && !p2.isEmpty() && visitedCommits.add(p2)) {
+                queue.add(p2);
+            }
         }
     }
 }

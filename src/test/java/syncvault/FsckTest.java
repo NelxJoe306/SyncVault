@@ -180,7 +180,7 @@ public class FsckTest {
         assertTrue(bad.output.contains("fsck: found "), bad.output);
 
         Cli fix = run(repo, "fsck", "--fix");
-        assertEquals(0, fix.exit, fix.output);
+        assertEquals(1, fix.exit, fix.output);
         assertTrue(fix.output.contains("Incorrect operands."), fix.output);
 
         Store.useDir(repo.resolve(".syncvault").toFile());

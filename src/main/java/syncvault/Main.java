@@ -6,6 +6,10 @@ import java.io.IOException;
 import static syncvault.Repository.*;
 
 /** Driver class for SyncVault, a subset of the Git version-control system.
+ *  Command failures throw {@link CommandException} (or another
+ *  {@link SyncVaultException} with a user-facing message). This class is the
+ *  only caller of {@code System.exit}: it prints that message and exits 1
+ *  on errors. The Netty server does not use this path.
  *  @author JOE
  */
 public class Main {
@@ -40,16 +44,27 @@ public class Main {
      * recover
      */
     public static void main(String[] args) throws IOException {
+        try {
+            run(args);
+        } catch (SyncVaultException e) {
+            String msg = e.getMessage();
+            if (msg != null && !msg.isEmpty()) {
+                System.out.println(msg);
+            }
+            int code = (e instanceof CommandException ce) ? ce.exitCode() : 1;
+            System.exit(code);
+        }
+    }
+
+    private static void run(String[] args) throws IOException {
         if (args.length == 0) {
-            System.out.println("Please enter a command.");
-            System.exit(0);
+            throw new CommandException("Please enter a command.");
         }
 
         String firstArg = args[0];
         if (firstArg.equals("init")) {
             if (args.length != 1) {
-                System.out.println("Incorrect operands.");
-                System.exit(0);
+                throw new CommandException("Incorrect operands.");
             }
             Repository.init();
             return;
@@ -58,16 +73,17 @@ public class Main {
             String[] benchArgs = java.util.Arrays.copyOfRange(args, 1, args.length);
             try {
                 Benchmark.main(benchArgs);
+            } catch (SyncVaultException e) {
+                throw e;
             } catch (Exception e) {
-                throw new SyncVaultException(e.getMessage());
+                throw new CommandException(e.getMessage());
             }
             return;
         }
 
         File syncDir = Repository.syncvaultDirForSession(Store.getDefault());
         if (!syncDir.exists()) {
-            System.out.println("Not in an initialized SyncVault directory.");
-            System.exit(0);
+            throw new CommandException("Not in an initialized SyncVault directory.");
         }
 
         if (firstArg.equals("abort") || firstArg.equals("--abort")) {
@@ -109,13 +125,13 @@ public class Main {
             String autoRecover = System.getenv("SYNCVAULT_AUTO_RECOVER");
             if ("continue".equalsIgnoreCase(autoRecover)) {
                 WorkspaceJournal.continueOp();
-                System.exit(0);
+                return;
             } else if ("abort".equalsIgnoreCase(autoRecover)) {
                 WorkspaceJournal.abort();
-                System.exit(0);
+                return;
             } else {
-                System.out.println("An interrupted workspace update was detected. Run 'syncvault abort' or 'syncvault continue'.");
-                System.exit(0);
+                throw new CommandException(
+                        "An interrupted workspace update was detected. Run 'syncvault abort' or 'syncvault continue'.");
             }
         }
 
@@ -128,50 +144,43 @@ public class Main {
         switch (firstArg) {
             case "add":
                 if (args.length != 2) {
-                    System.out.println("Incorrect operands.");
-                    System.exit(0);
+                    throw new CommandException("Incorrect operands.");
                 }
                 Repository.add(args[1]);
                 break;
             case "commit":
                 if (args.length != 2 || args[1].trim().isEmpty()) {
-                    System.out.println("Please enter a commit message.");
-                    System.exit(0);
+                    throw new CommandException("Please enter a commit message.");
                 }
                 Commit.commitInCurrBran(args[1]);
                 break;
             case "rm":
                 if (args.length != 2) {
-                    System.out.println("Incorrect operands.");
-                    System.exit(0);
+                    throw new CommandException("Incorrect operands.");
                 }
                 Repository.rm(args[1]);
                 break;
             case "log":
                 if (args.length != 1) {
-                    System.out.println("Incorrect operands.");
-                    System.exit(0);
+                    throw new CommandException("Incorrect operands.");
                 }
                 Repository.log();
                 break;
             case "global-log":
                 if (args.length != 1) {
-                    System.out.println("Incorrect operands.");
-                    System.exit(0);
+                    throw new CommandException("Incorrect operands.");
                 }
                 Repository.global_log();
                 break;
             case "find":
                 if (args.length != 2) {
-                    System.out.println("Incorrect operands.");
-                    System.exit(0);
+                    throw new CommandException("Incorrect operands.");
                 }
                 Repository.find(args[1]);
                 break;
             case "status":
                 if (args.length != 1) {
-                    System.out.println("Incorrect operands.");
-                    System.exit(0);
+                    throw new CommandException("Incorrect operands.");
                 }
                 Repository.status();
                 break;
@@ -183,35 +192,30 @@ public class Main {
                 } else if (args.length == 2) {
                     Repository.check_branch(args[1]);
                 } else {
-                    System.out.println("Incorrect operands.");
-                    System.exit(0);
+                    throw new CommandException("Incorrect operands.");
                 }
                 break;
             case "branch":
                 if (args.length != 2) {
-                    System.out.println("Incorrect operands.");
-                    System.exit(0);
+                    throw new CommandException("Incorrect operands.");
                 }
                 Commit.branch(args[1]);
                 break;
             case "rm-branch":
                 if (args.length != 2) {
-                    System.out.println("Incorrect operands.");
-                    System.exit(0);
+                    throw new CommandException("Incorrect operands.");
                 }
                 Commit.rm_branch(args[1]);
                 break;
             case "reset":
                 if (args.length != 2) {
-                    System.out.println("Incorrect operands.");
-                    System.exit(0);
+                    throw new CommandException("Incorrect operands.");
                 }
                 Repository.reset(args[1]);
                 break;
             case "merge":
                 if (args.length != 2) {
-                    System.out.println("Incorrect operands.");
-                    System.exit(0);
+                    throw new CommandException("Incorrect operands.");
                 }
                 Repository.merge(args[1]);
                 break;
@@ -219,31 +223,23 @@ public class Main {
                 if (args.length != 3 || (!args[2].equals("--ours")
                         && !args[2].equals("--theirs")
                         && !args[2].equals("--combined"))) {
-                    System.out.println("Incorrect operands.");
-                    System.exit(0);
+                    throw new CommandException("Incorrect operands.");
                 }
-                try {
-                    if (args[1].equals("--all")) {
-                        Repository.resolveAll(args[2]);
-                    } else {
-                        Repository.resolve(args[1], args[2]);
-                    }
-                } catch (SyncVaultException e) {
-                    System.out.println(e.getMessage());
-                    System.exit(0);
+                if (args[1].equals("--all")) {
+                    Repository.resolveAll(args[2]);
+                } else {
+                    Repository.resolve(args[1], args[2]);
                 }
                 break;
             case "add-remote":
                 if (args.length != 3) {
-                    System.out.println("Incorrect operands.");
-                    System.exit(0);
+                    throw new CommandException("Incorrect operands.");
                 }
                 Repository.add_remote(args[1], args[2]);
                 break;
             case "rm-remote":
                 if (args.length != 2) {
-                    System.out.println("Incorrect operands.");
-                    System.exit(0);
+                    throw new CommandException("Incorrect operands.");
                 }
                 Repository.rm_remote(args[1]);
                 break;
@@ -262,17 +258,14 @@ public class Main {
                     try {
                         int port = Integer.parseInt(args[1]);
                         if (port < 0 || port > 65535) {
-                            System.out.println("Incorrect operands.");
-                            System.exit(0);
+                            throw new CommandException("Incorrect operands.");
                         }
                         Repository.web(port).await();
                     } catch (NumberFormatException e) {
-                        System.out.println("Incorrect operands.");
-                        System.exit(0);
+                        throw new CommandException("Incorrect operands.");
                     }
                 } else {
-                    System.out.println("Incorrect operands.");
-                    System.exit(0);
+                    throw new CommandException("Incorrect operands.");
                 }
                 break;
             case "gc":
@@ -282,22 +275,19 @@ public class Main {
                     long graceMs = parseGraceArgument(args[1]);
                     Repository.gc(graceMs);
                 } else {
-                    System.out.println("Incorrect operands.");
-                    System.exit(0);
+                    throw new CommandException("Incorrect operands.");
                 }
                 break;
             case "fsck":
                 if (args.length != 1) {
-                    System.out.println("Incorrect operands.");
-                    System.exit(0);
+                    throw new CommandException("Incorrect operands.");
                 }
                 if (!Repository.fsck().ok()) {
-                    System.exit(1);
+                    throw new CommandException(null, 1);
                 }
                 break;
             default:
-                System.out.println("No command with that name exists.");
-                System.exit(0);
+                throw new CommandException("No command with that name exists.");
         }
     }
 
@@ -323,39 +313,30 @@ public class Main {
             } else if (arg.equals("--tls")) {
                 forceTls = true;
             } else if (arg.startsWith("--")) {
-                System.out.println("Incorrect operands.");
-                System.exit(0);
-                return;
+                throw new CommandException("Incorrect operands.");
             } else {
                 positionals.add(arg);
             }
         }
 
         if (positionals.size() != 2) {
-            System.out.println("Incorrect operands.");
-            System.exit(0);
-            return;
+            throw new CommandException("Incorrect operands.");
         }
 
         String remoteName = positionals.get(0);
         String branchName = positionals.get(1);
-        try {
-            switch (cmd) {
-                case "push":
-                    Repository.push(remoteName, branchName, token, tlsCa, tlsInsecure, forceTls);
-                    break;
-                case "fetch":
-                    Repository.fetch(remoteName, branchName, token, tlsCa, tlsInsecure, forceTls);
-                    break;
-                case "pull":
-                    Repository.pull(remoteName, branchName, token, tlsCa, tlsInsecure, forceTls);
-                    break;
-                default:
-                    break;
-            }
-        } catch (SyncVaultException e) {
-            System.out.println(e.getMessage());
-            System.exit(0);
+        switch (cmd) {
+            case "push":
+                Repository.push(remoteName, branchName, token, tlsCa, tlsInsecure, forceTls);
+                break;
+            case "fetch":
+                Repository.fetch(remoteName, branchName, token, tlsCa, tlsInsecure, forceTls);
+                break;
+            case "pull":
+                Repository.pull(remoteName, branchName, token, tlsCa, tlsInsecure, forceTls);
+                break;
+            default:
+                break;
         }
     }
 
@@ -380,43 +361,29 @@ public class Main {
             } else if (arg.equals("--tls-key") && i + 1 < args.length) {
                 tlsKey = new File(args[++i]);
             } else if (arg.startsWith("--")) {
-                System.out.println("Incorrect operands.");
-                System.exit(0);
-                return;
+                throw new CommandException("Incorrect operands.");
             } else if (port == null) {
                 try {
                     int parsed = Integer.parseInt(arg);
                     if (parsed < 0 || parsed > 65535) {
-                        System.out.println("Incorrect operands.");
-                        System.exit(0);
-                        return;
+                        throw new CommandException("Incorrect operands.");
                     }
                     port = parsed;
                 } catch (NumberFormatException e) {
-                    System.out.println("Incorrect operands.");
-                    System.exit(0);
-                    return;
+                    throw new CommandException("Incorrect operands.");
                 }
             } else {
-                System.out.println("Incorrect operands.");
-                System.exit(0);
-                return;
+                throw new CommandException("Incorrect operands.");
             }
         }
 
         int targetPort = (port != null) ? port : NettyServer.DEFAULT_PORT;
-        try {
-            Repository.serve(targetPort, token, tlsCert, tlsKey).await();
-        } catch (SyncVaultException e) {
-            System.out.println(e.getMessage());
-            System.exit(0);
-        }
+        Repository.serve(targetPort, token, tlsCert, tlsKey).await();
     }
 
     static long parseGraceArgument(String arg) {
         if (arg == null || arg.isBlank()) {
-            System.out.println("Incorrect operands.");
-            System.exit(0);
+            throw new CommandException("Incorrect operands.");
         }
         try {
             if (arg.startsWith("--grace-seconds=")) {
@@ -436,8 +403,6 @@ public class Main {
             }
         } catch (NumberFormatException ignored) {
         }
-        System.out.println("Incorrect operands.");
-        System.exit(0);
-        return 0L;
+        throw new CommandException("Incorrect operands.");
     }
 }

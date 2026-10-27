@@ -33,7 +33,11 @@ public class Main {
      * serve
      * web
      * gc
+     * gc
      * fsck
+     * abort
+     * continue
+     * recover
      */
     public static void main(String[] args) throws IOException {
         if (args.length == 0) {
@@ -60,9 +64,57 @@ public class Main {
             return;
         }
 
-        if (!Repository.SYNCVAULT_DIR.exists()) {
+        File syncDir = Repository.syncvaultDirForSession(Store.getDefault());
+        if (!syncDir.exists()) {
             System.out.println("Not in an initialized SyncVault directory.");
             System.exit(0);
+        }
+
+        if (firstArg.equals("abort") || firstArg.equals("--abort")) {
+            if (!WorkspaceJournal.hasPending()) {
+                System.out.println("No interrupted workspace update to abort.");
+                return;
+            }
+            WorkspaceJournal.abort();
+            System.out.println("Interrupted workspace update aborted.");
+            return;
+        }
+        if (firstArg.equals("continue") || firstArg.equals("--continue")) {
+            if (!WorkspaceJournal.hasPending()) {
+                System.out.println("No interrupted workspace update to continue.");
+                return;
+            }
+            WorkspaceJournal.continueOp();
+            System.out.println("Interrupted workspace update continued.");
+            return;
+        }
+        if (firstArg.equals("recover")) {
+            if (!WorkspaceJournal.hasPending()) {
+                System.out.println("No interrupted workspace update to recover.");
+                return;
+            }
+            if (args.length > 1 && (args[1].equals("--continue") || args[1].equals("continue"))) {
+                WorkspaceJournal.continueOp();
+                System.out.println("Interrupted workspace update continued.");
+            } else if (args.length > 1 && (args[1].equals("--abort") || args[1].equals("abort"))) {
+                WorkspaceJournal.abort();
+                System.out.println("Interrupted workspace update aborted.");
+            } else {
+                System.out.println("Usage: syncvault recover --abort | --continue");
+            }
+            return;
+        }
+
+        if (WorkspaceJournal.hasPending()) {
+            String autoRecover = System.getenv("SYNCVAULT_AUTO_RECOVER");
+            if ("continue".equalsIgnoreCase(autoRecover)) {
+                WorkspaceJournal.continueOp();
+            } else if ("abort".equalsIgnoreCase(autoRecover)) {
+                WorkspaceJournal.abort();
+            } else {
+                System.out.println("An interrupted workspace update was detected. Run 'syncvault abort' or 'syncvault continue'.");
+                System.exit(0);
+            }
         }
 
         String curr_bran_head = Store.getHead();

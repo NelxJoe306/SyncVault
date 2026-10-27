@@ -9,8 +9,10 @@ import java.io.IOException;
 import java.io.ObjectInputStream;
 import java.io.ObjectOutputStream;
 import java.io.Serializable;
+import java.nio.file.AtomicMoveNotSupportedException;
 import java.nio.file.Files;
 import java.nio.file.Paths;
+import java.nio.file.StandardCopyOption;
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
@@ -135,6 +137,36 @@ class Utils {
         return new String(readContents(file), StandardCharsets.UTF_8);
     }
 
+    static File findTempDir(File file) {
+        File dir = file.getAbsoluteFile().getParentFile();
+        while (dir != null) {
+            File sv = new File(dir, ".syncvault");
+            if (sv.isDirectory()) {
+                File tmp = new File(sv, "tmp");
+                if (tmp.isDirectory() || tmp.mkdirs()) {
+                    return tmp;
+                }
+            }
+            dir = dir.getParentFile();
+        }
+        return file.getParentFile() != null ? file.getParentFile() : new File(".");
+    }
+
+    static void atomicMove(File src, File dst) throws IOException {
+        File parent = dst.getParentFile();
+        if (parent != null && !parent.exists()) {
+            parent.mkdirs();
+        }
+        try {
+            Files.move(src.toPath(), dst.toPath(),
+                    StandardCopyOption.ATOMIC_MOVE,
+                    StandardCopyOption.REPLACE_EXISTING);
+        } catch (AtomicMoveNotSupportedException e) {
+            Files.move(src.toPath(), dst.toPath(),
+                    StandardCopyOption.REPLACE_EXISTING);
+        }
+    }
+
     /** Write the result of concatenating the bytes in CONTENTS to FILE,
      *  creating or overwriting it as needed.  Each object in CONTENTS may be
      *  either a String or a byte array.  Throws IllegalArgumentException
@@ -145,16 +177,30 @@ class Utils {
                 throw
                     new IllegalArgumentException("cannot overwrite directory");
             }
-            BufferedOutputStream str =
-                new BufferedOutputStream(Files.newOutputStream(file.toPath()));
-            for (Object obj : contents) {
-                if (obj instanceof byte[]) {
-                    str.write((byte[]) obj);
-                } else {
-                    str.write(((String) obj).getBytes(StandardCharsets.UTF_8));
+            File parent = file.getParentFile();
+            if (parent != null && !parent.exists()) {
+                parent.mkdirs();
+            }
+            File tempDir = findTempDir(file);
+            File tempFile = File.createTempFile(".syncvault-tmp-", ".tmp", tempDir);
+            try {
+                try (BufferedOutputStream str =
+                             new BufferedOutputStream(Files.newOutputStream(tempFile.toPath()))) {
+                    for (Object obj : contents) {
+                        if (obj instanceof byte[]) {
+                            str.write((byte[]) obj);
+                        } else {
+                            str.write(((String) obj).getBytes(StandardCharsets.UTF_8));
+                        }
+                    }
+                    str.flush();
+                }
+                atomicMove(tempFile, file);
+            } finally {
+                if (tempFile.exists()) {
+                    tempFile.delete();
                 }
             }
-            str.close();
         } catch (IOException | ClassCastException excp) {
             throw new IllegalArgumentException(excp.getMessage());
         }
@@ -188,7 +234,7 @@ class Utils {
         new FilenameFilter() {
             @Override
             public boolean accept(File dir, String name) {
-                return new File(dir, name).isFile();
+                return new File(dir, name).isFile() && !name.startsWith(".syncvault-tmp");
             }
         };
 

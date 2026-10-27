@@ -292,3 +292,16 @@ files          重复 fileCount 次：文件名、blob id（都是非空字符�
   - `object` 表增加 `created_at` 毫秒时间戳记录对象写入时间。
   - **宽限期（Grace Period）**：`gc(long graceMillis)` 支持指定宽限期（可通过 CLI 参数 `--grace=<ms>` / `--grace-seconds=<s>`、系统属性 `syncvault.gc.graceMs` 或环境变量 `SYNCVAULT_GC_GRACE_MS` 配置，默认 0 保持即时清理兼容性）。凡在宽限窗口内新写入的对象（`createdAt >= gcStartTime - graceMillis`）本轮 GC 不予清除。若某一不可达 commit 处于宽限期内，其快照包含的全部 blob 亦自动继承保留。
   - **在途写入保护（In-Flight Protection）**：Push 临界区（`Session.runInFlightPush`：仓库锁 → `startInFlightPush` → 事务 → `endInFlightPush`）只登记本次 push 实际写入的对象哈希。`inFlightObjects` 为空时不保护任何对象，不会把库里所有对象都当成在途。仓库锁与宽限期仍是主要安全保障；已登记且尚无引用的对象豁免于同轮 GC。
+
+### 9. 工作区原子落地与事务日志 (Atomic Workspace Updates & Journal)
+
+- **单文件原子写入**：
+  - `Utils.writeContents` 不再直接截断目标文件，而是首先在 `.syncvault/tmp/`（若仓库已初始化）或目标所在目录创建临时文件，写入全部内容并刷盘后，通过 `Files.move(..., ATOMIC_MOVE, REPLACE_EXISTING)` 原子重命名落地。若写入途中发生 JVM 崩溃或中断，原文件内容保持完全完好，不会产生截断、空字节或损坏文件。
+- **多文件工作区事务日志 (Workspace Journal)**：
+  - `checkout`（切换分支）、`reset` 与 `merge` 在修改工作区文件之前，先将所有待更新文件完整写入 `.syncvault/tmp/op-<uuid>/`，并原子落地事务日志 `.syncvault/workspace_journal`。日志记录操作类型、源提交/分支、目标提交/分支、待写入文件映射、待删除文件列表及原提交文件快照。
+  - 完成工作区原子移动与删除后，在单个 SQLite 事务中更新分支指针、HEAD 与清空暂存区，成功后清理临时目录与日志文件。
+  - **崩溃恢复语义 (Abort / Continue)**：
+    - 若在工作区文件应用中途或数据库更新前被异常中断，工作区进入明确的可恢复状态，常规命令（如 `status`）将检测到未完成日志并明确提示用户。
+    - `syncvault abort`（或 `syncvault recover --abort`）：根据原提交快照完整还原被修改或删除的文件，清理新分支引入的文件，恢复数据库指针，使工作区与数据库严格回滚至原一致状态。
+    - `syncvault continue`（或 `syncvault recover --continue`）：将未落地的目标文件补齐，清理待删除文件，提交数据库分支指针，使操作顺利完成。
+    - 支持环境变量 `SYNCVAULT_AUTO_RECOVER=abort` 或 `continue` 在启动期自动执行恢复。

@@ -27,6 +27,13 @@ public class Repository {
      * The current working directory.
      */
     public static final File CWD = new File(System.getProperty("user.dir"));
+
+    /**
+     * Returns the active working tree directory associated with current store session.
+     */
+    public static File getCwd() {
+        return workDirForSession(Store.getDefault());
+    }
     /**
      * The .syncvault directory.
      */
@@ -83,7 +90,7 @@ public class Repository {
             System.out.println("File does not exist.");
             System.exit(0);
         }
-        File f = join(CWD, name);
+        File f = join(getCwd(), name);
         if (!f.exists()) {
             System.out.println("File does not exist.");
             System.exit(0);
@@ -108,7 +115,7 @@ public class Repository {
      * (do not remove it unless it is tracked in the current commit).
      */
     public static void rm(String name) throws IOException {
-        File CWDf = join(CWD, name);
+        File CWDf = join(getCwd(), name);
         TreeMap<String, String> m = Store.stagedAdditions();
         boolean staged = false;
         if (m.containsKey(name)) {
@@ -240,6 +247,10 @@ public class Repository {
      *
      */
     public static void status() {
+        if (WorkspaceJournal.hasPending()) {
+            System.out.println("An interrupted workspace update was detected. Run 'syncvault abort' or 'syncvault continue'.");
+            return;
+        }
         /*  branches  */
         String currb = Store.getHead();
         List<String> l = allBranchNames();
@@ -271,7 +282,7 @@ public class Repository {
 
         /* === Modifications Not Staged For Commit === */
         System.out.println("=== Modifications Not Staged For Commit ===");
-        l = plainFilenamesIn(CWD);
+        l = plainFilenamesIn(getCwd());
         if (l == null) {
             l = new ArrayList<>();
         }
@@ -289,7 +300,7 @@ public class Repository {
          */
         TreeSet<String> modifications = new TreeSet<>();
         for (String s : sf) {
-            File cwd_f = join(CWD, s);
+            File cwd_f = join(getCwd(), s);
             if (!cwd_f.exists()) {
                 modifications.add(s + " (deleted)");
             } else if (!Utils.hash(readContents(cwd_f)).equals(stage_m.get(s))) {
@@ -300,7 +311,7 @@ public class Repository {
             if (sf.contains(s) || removedSet.contains(s)) {
                 continue;
             }
-            File cwd_f = join(CWD, s);
+            File cwd_f = join(getCwd(), s);
             if (!cwd_f.exists()) {
                 modifications.add(s + " (deleted)");
             } else if (!Utils.hash(readContents(cwd_f)).equals(m.get(s))) {
@@ -337,7 +348,7 @@ public class Repository {
         if (!curr_com_m.containsKey(name)) {
             System.out.println("File does not exist in that commit.");
         }else {
-            File cwd_f = join(CWD, name);
+            File cwd_f = join(getCwd(), name);
             String hash = curr_com_m.get(name);
             byte[] text = Store.getBlob(hash);
             writeContents(cwd_f, text);
@@ -395,17 +406,15 @@ public class Repository {
             System.exit(0);
         }
 
-
         /*check if is untracked*/
-        List<String> l = plainFilenamesIn(CWD);
+        List<String> l = plainFilenamesIn(getCwd());
         TreeMap<String, String> stageAdd = Store.stagedAdditions();
         Set<String> sf = stageAdd.keySet();
         Map<String, String> cf = currCommitFiles_map();
 
-        String oldHead = currHead;
-        currHead = targetCommit;
-        Set<String> targetFiles = currCommitFiles_map().keySet();
-        currHead = oldHead;
+        Commit targetCommitObj = Store.getCommit(targetCommit);
+        TreeMap<String, String> cm = (targetCommitObj != null) ? targetCommitObj.getNameToHash() : new TreeMap<>();
+        Set<String> targetFiles = cm.keySet();
 
         List<String> removedNames = Store.stagedRemovals();
         Set<String> removedSet = new HashSet<>(removedNames);
@@ -420,35 +429,18 @@ public class Repository {
                     System.exit(0);
                 }
             }
-
-            for (String s : l) {
-                if (cf.containsKey(s) && !targetFiles.contains(s)) {
-                    Utils.join(CWD, s).delete();
-
-                }
-            }
         }
 
-        currHead = targetCommit;
-        TreeMap<String, String> cm = currCommitFiles_map();
-        for (String s : cm.keySet()) {
-            File copy = Utils.join(CWD, s);
-            byte[] content = Store.getBlob(cm.get(s));
-            Utils.writeContents(copy, content);
-            if (!copy.exists()) {
-                copy.createNewFile();
-            }
-        }
-        for (String s : cf.keySet()) {
-            if (!cm.containsKey(s)) {
-                Utils.join(CWD, s).delete();
-            }
-        }
-        Store.begin();
-        Store.setHead(name);
-        resetStage();
-        resetRemoval();
-        Store.commitTx();
+        String oldHead = (currb != null && Store.getRef(currb) != null) ? Store.getRef(currb) : currHead;
+        WorkspaceJournal.updateWorkspace(
+                "checkout",
+                currb,
+                oldHead,
+                name,
+                targetCommit,
+                cm,
+                cf
+        );
     }
 
     /**
@@ -456,26 +448,19 @@ public class Repository {
      * The working directory is updated to match the given commit,
      * and the staging area is cleared.
      */
-    public static void reset(String id) {
-
+    public static void reset(String id) throws IOException {
         String full_id = findCommitId(id);
 
         Commit aim_com = Store.getCommit(full_id);
-
         if (aim_com == null) {
             System.out.println("No commit with that id exists.");
             return;
         }
 
         Map<String, String> cf = currCommitFiles_map();
+        Map<String, String> targetFiles = aim_com.getNameToHash();
 
-        String oldHead = currHead;
-        currHead = full_id;
-        Map<String, String> targetFiles = currCommitFiles_map();
-        currHead = oldHead;
-
-        List<String> files = plainFilenamesIn(CWD);
-
+        List<String> files = plainFilenamesIn(getCwd());
         if (files != null) {
             Set<String> stagedFiles = Store.stagedAdditions().keySet();
             List<String> removedNames = Store.stagedRemovals();
@@ -485,7 +470,6 @@ public class Repository {
                 boolean untracked = (!cf.containsKey(fileName) || removedSet.contains(fileName))
                         && !stagedFiles.contains(fileName);
                 if (untracked && targetFiles.containsKey(fileName)) {
-
                     System.out.println(
                             "There is an untracked file in the way; "
                                     + "delete it, or add and commit it first."
@@ -495,31 +479,17 @@ public class Repository {
             }
         }
 
-        for (String fileName : cf.keySet()) {
-
-            if (!targetFiles.containsKey(fileName)) {
-                Utils.join(CWD, fileName).delete();
-            }
-        }
-
-        for (String fileName : targetFiles.keySet()) {
-
-            File file = Utils.join(CWD, fileName);
-
-            byte[] content = Store.getBlob(targetFiles.get(fileName));
-
-            Utils.writeContents(file, content);
-        }
-
-        currHead = full_id;
-
         String currentBranch = Store.getHead();
-
-        Store.begin();
-        Store.setRef(currentBranch, full_id);
-        resetStage();
-        resetRemoval();
-        Store.commitTx();
+        String oldHead = (currentBranch != null && Store.getRef(currentBranch) != null) ? Store.getRef(currentBranch) : currHead;
+        WorkspaceJournal.updateWorkspace(
+                "reset",
+                currentBranch,
+                oldHead,
+                currentBranch,
+                full_id,
+                targetFiles,
+                cf
+        );
     }
 
     /**
@@ -616,7 +586,7 @@ public class Repository {
         TreeMap<String, String> currMap = currCommit.getNameToHash();
         TreeMap<String, String> givenMap = givenCommit.getNameToHash();
 
-        List<String> cwdFiles = plainFilenamesIn(CWD);
+        List<String> cwdFiles = plainFilenamesIn(getCwd());
         if (cwdFiles == null) {
             cwdFiles = new ArrayList<>();
         }
@@ -663,7 +633,6 @@ public class Repository {
         TreeMap<String, String> newCommitMap = new TreeMap<>(currMap);
         boolean hasConflict = false;
 
-        Store.begin();
         for (String file : allFiles) {
             String sHash = splitMap.get(file);
             String cHash = currMap.get(file);
@@ -674,17 +643,9 @@ public class Repository {
                 if (Objects.equals(sHash, cHash)) {
                     if (gHash != null && !Objects.equals(sHash, gHash)) {
                         // Rule 1: modified in given, not modified in curr
-                        byte[] content = Store.getBlob(gHash);
-                        writeContents(join(CWD, file), content);
-                        Blob.saveToStage(file);
                         newCommitMap.put(file, gHash);
                     } else if (gHash == null) {
                         // Rule 6: absent in given, unmodified in curr
-                        File cwdF = join(CWD, file);
-                        if (cwdF.exists()) {
-                            cwdF.delete();
-                        }
-                        Store.stageRemove(file);
                         newCommitMap.remove(file);
                     }
                     // if sHash == gHash: unmodified in both, do nothing
@@ -706,8 +667,6 @@ public class Repository {
                             hasConflict = true;
                         }
                         byte[] mergedContent = mergeResult.content();
-                        writeContents(join(CWD, file), mergedContent);
-                        Blob.saveToStage(file);
                         String mergedBlobHash = Utils.hash(mergedContent);
                         Store.putBlob(mergedBlobHash, mergedContent);
                         newCommitMap.put(file, mergedBlobHash);
@@ -719,9 +678,6 @@ public class Repository {
                     // Rule 4: present only in curr -> stays as is
                 } else if (cHash == null && gHash != null) {
                     // Rule 5: present only in given -> checkout & stage
-                    byte[] content = Store.getBlob(gHash);
-                    writeContents(join(CWD, file), content);
-                    Blob.saveToStage(file);
                     newCommitMap.put(file, gHash);
                 } else if (cHash != null && gHash != null) {
                     if (Objects.equals(cHash, gHash)) {
@@ -735,8 +691,6 @@ public class Repository {
                             hasConflict = true;
                         }
                         byte[] mergedContent = mergeResult.content();
-                        writeContents(join(CWD, file), mergedContent);
-                        Blob.saveToStage(file);
                         String mergedBlobHash = Utils.hash(mergedContent);
                         Store.putBlob(mergedBlobHash, mergedContent);
                         newCommitMap.put(file, mergedBlobHash);
@@ -746,11 +700,7 @@ public class Repository {
         }
 
         // 8. Check if anything changed
-        TreeMap<String, String> fs = Store.stagedAdditions();
-        List<String> rml = Store.stagedRemovals();
-        boolean hasStaged = (!fs.isEmpty()) || (rml != null && !rml.isEmpty());
-        if (!hasStaged && newCommitMap.equals(currMap)) {
-            Store.rollback();
+        if (newCommitMap.equals(currMap)) {
             System.out.println("No changes added to the commit.");
             System.exit(0);
         }
@@ -762,13 +712,16 @@ public class Repository {
 
         Store.putCommit(mergeCommit);
 
-        currHead = mergeCommit.getSelfHash();
-        Store.setRef(curr_Head, currHead);
-
-        resetStage();
-        resetRemoval();
-
-        Store.commitTx();
+        String newHead = mergeCommit.getSelfHash();
+        WorkspaceJournal.updateWorkspace(
+                "merge",
+                curr_Head,
+                current_head_hash,
+                curr_Head,
+                newHead,
+                newCommitMap,
+                currMap
+        );
 
         if (hasConflict) {
             System.out.println("Encountered a merge conflict.");
@@ -1310,6 +1263,20 @@ public class Repository {
             }
         }
         return false;
+    }
+
+    /**
+     * Aborts an interrupted workspace operation and rolls back the working tree and DB.
+     */
+    public static void abort() throws IOException {
+        WorkspaceJournal.abort();
+    }
+
+    /**
+     * Continues an interrupted workspace operation to completion.
+     */
+    public static void continueOp() throws IOException {
+        WorkspaceJournal.continueOp();
     }
 
     /** Branch names, including remote-tracking names stored in ref table. */

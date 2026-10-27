@@ -23,26 +23,35 @@ import java.util.TreeSet;
  *
  * <p>SVM1 layout (big-endian), framed by Netty's 4-byte length prefix:
  * <pre>
- * magic     4 bytes  'S' 'V' 'M' '1'
- * version   uint16   1
- * type      uint8    1 HELLO, 2 HELLO_OK, 3 FETCH_REQ, 4 FETCH_TIP,
- *                    5 FETCH_HAVE, 6 FETCH_OBJECTS, 7 PUSH_REQ, 8 PUSH_TIP,
- *                    9 PUSH_OBJECTS, 10 ACK, 11 ERROR
- * branch    nullable string
- * tipHash   nullable string
- * error     nullable string
- * token     nullable string
- * hashes    nullable list of strings (encoded in sorted order)
- * commits   nullable list of opaque byte arrays (SVC1 commit encodings)
- * blobs     nullable list of (string id, byte array) pairs
+ * magic          4 bytes  'S' 'V' 'M' '1'
+ * version        uint16   2 (1 is still accepted; see below)
+ * type           uint8    1 HELLO, 2 HELLO_OK, 3 FETCH_REQ, 4 FETCH_TIP,
+ *                         5 FETCH_HAVE, 6 FETCH_OBJECTS, 7 PUSH_REQ, 8 PUSH_TIP,
+ *                         9 PUSH_OBJECTS, 10 ACK, 11 ERROR
+ * branch         nullable string
+ * tipHash        nullable string
+ * error          nullable string
+ * token          nullable string
+ * hashes         nullable list of strings (encoded in sorted order)
+ * commits        nullable list of opaque byte arrays (SVC1 commit encodings)
+ * blobs          nullable list of (string id, byte array) pairs
+ * expectedOldTip nullable string, version 2 only
  * </pre>
  * A nullable value is a uint8 flag (0 = null, 1 = present). Lists then have a
  * uint32 count. Null and empty are distinct. Commit payloads are not Java
  * objects; {@link #deserializeCommit} only accepts SVC1.
+ *
+ * <p>Version 2 appends {@code expectedOldTip}. It is the branch tip the client
+ * observed in {@code PUSH_TIP}, and the server compares it to the current ref
+ * inside the push lock. Null or empty means the branch is expected to be
+ * absent. Version 1 messages have no such field and decode as null, so a v1
+ * push cannot move a branch that already exists. The encoder writes version 2.
  */
 public class SyncMessage {
     private static final byte[] MAGIC = new byte[] {'S', 'V', 'M', '1'};
-    private static final int VERSION = 1;
+    /** Current on-wire version. Version 1 is still decoded. */
+    static final int VERSION = 2;
+    private static final int MIN_VERSION = 1;
 
     public enum Type {
         HELLO,
@@ -66,14 +75,22 @@ public class SyncMessage {
     public final Map<String, byte[]> blobs;
     public final String error;
     public final String token;
+    /** Branch tip the pusher observed. Null on every type except {@link Type#PUSH_OBJECTS}. */
+    public final String expectedOldTip;
 
     private SyncMessage(Type type, String branch, String tipHash, Set<String> hashes,
                         List<byte[]> commits, Map<String, byte[]> blobs, String error) {
-        this(type, branch, tipHash, hashes, commits, blobs, error, null);
+        this(type, branch, tipHash, hashes, commits, blobs, error, null, null);
     }
 
     private SyncMessage(Type type, String branch, String tipHash, Set<String> hashes,
                         List<byte[]> commits, Map<String, byte[]> blobs, String error, String token) {
+        this(type, branch, tipHash, hashes, commits, blobs, error, token, null);
+    }
+
+    private SyncMessage(Type type, String branch, String tipHash, Set<String> hashes,
+                        List<byte[]> commits, Map<String, byte[]> blobs, String error,
+                        String token, String expectedOldTip) {
         this.type = type;
         this.branch = branch;
         this.tipHash = tipHash;
@@ -82,6 +99,7 @@ public class SyncMessage {
         this.blobs = blobs;
         this.error = error;
         this.token = token;
+        this.expectedOldTip = expectedOldTip;
     }
 
     public static SyncMessage hello() {
@@ -122,7 +140,17 @@ public class SyncMessage {
 
     public static SyncMessage pushObjects(String branch, String tipHash,
                                           List<byte[]> commits, Map<String, byte[]> blobs) {
-        return new SyncMessage(Type.PUSH_OBJECTS, branch, tipHash, null, commits, blobs, null);
+        return pushObjects(branch, tipHash, commits, blobs, null);
+    }
+
+    /**
+     * @param expectedOldTip tip from {@code PUSH_TIP}; null or empty when the
+     *                       branch is not expected to exist yet
+     */
+    public static SyncMessage pushObjects(String branch, String tipHash,
+                                          List<byte[]> commits, Map<String, byte[]> blobs,
+                                          String expectedOldTip) {
+        return new SyncMessage(Type.PUSH_OBJECTS, branch, tipHash, null, commits, blobs, null, null, expectedOldTip);
     }
 
     public static SyncMessage ack() {
@@ -157,6 +185,7 @@ public class SyncMessage {
             writeHashes(out, hashes);
             writeCommits(out, commits);
             writeBlobs(out, blobs);
+            BinaryFields.writeNullableString(out, expectedOldTip);
             out.flush();
             return raw.toByteArray();
         } catch (IOException e) {
@@ -177,7 +206,7 @@ public class SyncMessage {
                 throw new SyncVaultException("unrecognized sync message encoding");
             }
             int version = BinaryFields.readUnsignedShort(in);
-            if (version != VERSION) {
+            if (version < MIN_VERSION || version > VERSION) {
                 throw new SyncVaultException("unsupported sync message version: " + version);
             }
             Type type = typeFromCode(BinaryFields.readUnsignedByte(in));
@@ -188,10 +217,14 @@ public class SyncMessage {
             Set<String> hashes = readHashes(in);
             List<byte[]> commits = readCommits(in);
             Map<String, byte[]> blobs = readBlobs(in);
+            String expectedOldTip = null;
+            if (version >= 2) {
+                expectedOldTip = BinaryFields.readNullableString(in);
+            }
             if (in.available() != 0) {
                 throw new SyncVaultException("trailing bytes in sync message");
             }
-            return new SyncMessage(type, branch, tipHash, hashes, commits, blobs, error, token);
+            return new SyncMessage(type, branch, tipHash, hashes, commits, blobs, error, token, expectedOldTip);
         } catch (SyncVaultException e) {
             throw e;
         } catch (IOException e) {

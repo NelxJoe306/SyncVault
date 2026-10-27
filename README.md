@@ -105,6 +105,8 @@ java -jar target/syncvault-0.1.0-SNAPSHOT.jar init
 java -cp target/classes syncvault.Main init
 ```
 
+命令错误（错误参数、仓库检查失败、`fsck` 发现问题等）打印原有提示并以状态码 1 退出。成功命令由 `Main` 正常返回，状态码为 0。`serve` 对客户端协议错误返回 `ERROR` 帧，不会因此结束进程。环境变量一律使用 `SYNCVAULT_*`（例如 `SYNCVAULT_SYNC_TOKEN`、`SYNCVAULT_GC_GRACE_MS`）。
+
 启动 Netty 远程同步服务端并从客户端关联同步：
 ```bash
 # 服务端仓库目录下启动服务（默认监听 9418 端口，无配置时保持明文免密兼容）

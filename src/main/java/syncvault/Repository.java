@@ -53,8 +53,8 @@ public class Repository {
      */
     public static void init() throws IOException {
         if (SYNCVAULT_DIR.exists()) {
-            message("A SyncVault version-control system already exists in the current directory.");
-            System.exit(0);
+            throw new CommandException(
+                    "A SyncVault version-control system already exists in the current directory.");
         } else {
             SYNCVAULT_DIR.mkdir();
             Store.createSchema();
@@ -70,8 +70,7 @@ public class Repository {
      */
     public static void commit(String message) {
         if (Store.stagedAdditions().isEmpty()) {
-            System.out.println("No changes added to the commit.");
-            System.exit(0);
+            throw new CommandException("No changes added to the commit.");
         }
     }
 
@@ -87,13 +86,11 @@ public class Repository {
          *     and remove it from the staging area if it is already there
          */
         if (name.isEmpty()) {
-            System.out.println("File does not exist.");
-            System.exit(0);
+            throw new CommandException("File does not exist.");
         }
         File f = join(getCwd(), name);
         if (!f.exists()) {
-            System.out.println("File does not exist.");
-            System.exit(0);
+            throw new CommandException("File does not exist.");
         } else {
             byte[] data = readContents(f);
             String hash = Utils.hash(data);
@@ -124,8 +121,7 @@ public class Repository {
         }
         boolean tracked = currCommitFiles_map().containsKey(name);
         if (!staged && !tracked) {
-            System.out.println("No reason to remove the file.");
-            System.exit(0);
+            throw new CommandException("No reason to remove the file.");
         }
         /* Tracked: remember the removal and delete the working copy.
            Staged only: the unstage above is the whole operation. */
@@ -214,7 +210,7 @@ public class Repository {
     public static void find(String fm) {
         List<String> arr_c = Store.commitIdsWithMessage(fm);
         if (arr_c.isEmpty()) {
-            System.out.println("Found no commit with that message.");
+            throw new CommandException("Found no commit with that message.");
         } else {
             for (String s : arr_c) {
                 System.out.println(s);
@@ -346,7 +342,7 @@ public class Repository {
     public static void check_file(String name) throws IOException {
         TreeMap<String,String> curr_com_m = currCommitFiles_map();
         if (!curr_com_m.containsKey(name)) {
-            System.out.println("File does not exist in that commit.");
+            throw new CommandException("File does not exist in that commit.");
         }else {
             File cwd_f = join(getCwd(), name);
             String hash = curr_com_m.get(name);
@@ -366,8 +362,11 @@ public class Repository {
         String full_id = findCommitId(id);
         String p = currHead;
         currHead = full_id;
-        check_file(name);
-        currHead = p;
+        try {
+            check_file(name);
+        } finally {
+            currHead = p;
+        }
     }
 
     /**
@@ -377,8 +376,7 @@ public class Repository {
     private static String findCommitId(String id) {
         List<String> matches = Store.commitIdsWithPrefix(id);
         if (matches == null || matches.size() != 1) {
-            System.out.println("No commit with that id exists.");
-            System.exit(0);
+            throw new CommandException("No commit with that id exists.");
         }
         return matches.get(0);
     }
@@ -396,14 +394,12 @@ public class Repository {
         /*check if the branch exists, including remote/branch under ref/ */
         String targetCommit = Store.getRef(name);
         if (targetCommit == null) {
-            System.out.println("No such branch exists.");
-            System.exit(0);
+            throw new CommandException("No such branch exists.");
         }
         /*check if is the current branch*/
         String currb = Store.getHead();
         if (Objects.equals(currb, name)) {
-            System.out.println("No need to checkout the current branch.");
-            System.exit(0);
+            throw new CommandException("No need to checkout the current branch.");
         }
 
         /*check if is untracked*/
@@ -424,9 +420,8 @@ public class Repository {
                 boolean untracked = (!cf.containsKey(s) || removedSet.contains(s))
                         && !sf.contains(s);
                 if (untracked && targetFiles.contains(s)) {
-                    System.out.println("There is an untracked file in the way; " +
-                            "delete it, or add and commit it first.");
-                    System.exit(0);
+                    throw new CommandException("There is an untracked file in the way; "
+                            + "delete it, or add and commit it first.");
                 }
             }
         }
@@ -453,8 +448,7 @@ public class Repository {
 
         Commit aim_com = Store.getCommit(full_id);
         if (aim_com == null) {
-            System.out.println("No commit with that id exists.");
-            return;
+            throw new CommandException("No commit with that id exists.");
         }
 
         Map<String, String> cf = currCommitFiles_map();
@@ -470,11 +464,9 @@ public class Repository {
                 boolean untracked = (!cf.containsKey(fileName) || removedSet.contains(fileName))
                         && !stagedFiles.contains(fileName);
                 if (untracked && targetFiles.containsKey(fileName)) {
-                    System.out.println(
+                    throw new CommandException(
                             "There is an untracked file in the way; "
-                                    + "delete it, or add and commit it first."
-                    );
-                    System.exit(0);
+                                    + "delete it, or add and commit it first.");
                 }
             }
         }
@@ -556,22 +548,19 @@ public class Repository {
             List<String> removedFiles = Store.stagedRemovals();
             boolean hasStagedRemovals = removedFiles != null && !removedFiles.isEmpty();
             if (hasStagedAdditions || hasStagedRemovals) {
-                System.out.println("You have uncommitted changes.");
-                System.exit(0);
+                throw new CommandException("You have uncommitted changes.");
             }
 
             // 2. Check branch existence
             String branch_head_hash = Store.getRef(branch);
             String curr_Head = Store.getHead();
             if (branch_head_hash == null) {
-                System.out.println("A branch with that name does not exist.");
-                System.exit(0);
+                throw new CommandException("A branch with that name does not exist.");
             }
 
             // 3. Check merging with self
             if (curr_Head.equals(branch)) {
-                System.out.println("Cannot merge a branch with itself.");
-                System.exit(0);
+                throw new CommandException("Cannot merge a branch with itself.");
             }
 
             String current_head_hash = Store.getRef(curr_Head);
@@ -602,8 +591,8 @@ public class Repository {
             if (split_id != null && split_id.equals(current_head_hash)) {
                 for (String file : cwdFiles) {
                     if (!currMap.containsKey(file) && !stagedAdd.contains(file) && givenMap.containsKey(file)) {
-                        System.out.println("There is an untracked file in the way; delete it, or add and commit it first.");
-                        System.exit(0);
+                        throw new CommandException(
+                                "There is an untracked file in the way; delete it, or add and commit it first.");
                     }
                 }
                 reset(branch_head_hash);
@@ -624,8 +613,8 @@ public class Repository {
                     String cHash = currMap.get(file);
                     String gHash = givenMap.get(file);
                     if (wouldBeOverwrittenOrDeleted(sHash, cHash, gHash)) {
-                        System.out.println("There is an untracked file in the way; delete it, or add and commit it first.");
-                        System.exit(0);
+                        throw new CommandException(
+                                "There is an untracked file in the way; delete it, or add and commit it first.");
                     }
                 }
             }
@@ -703,8 +692,7 @@ public class Repository {
 
             // 8. Check if anything changed
             if (newCommitMap.equals(currMap)) {
-                System.out.println("No changes added to the commit.");
-                System.exit(0);
+                throw new CommandException("No changes added to the commit.");
             }
 
             // 9. Create merge commit
@@ -740,8 +728,7 @@ public class Repository {
      */
     public static void add_remote(String name, String path) {
         if (Store.getRemote(name) != null) {
-            System.out.println("A remote with that name already exists.");
-            System.exit(0);
+            throw new CommandException("A remote with that name already exists.");
         }
         String normalizedPath = isNetworkRemote(path) ? path : path.replace('/', File.separatorChar);
         Store.addRemote(name, normalizedPath);
@@ -754,8 +741,7 @@ public class Repository {
      */
     public static void rm_remote(String name) {
         if (Store.getRemote(name) == null) {
-            System.out.println("A remote with that name does not exist.");
-            System.exit(0);
+            throw new CommandException("A remote with that name does not exist.");
         }
         Store.removeRemote(name);
     }
@@ -789,8 +775,7 @@ public class Repository {
                             String token, File tlsCaFile, boolean tlsInsecure, boolean forceTls) throws IOException {
         String remotePath = Store.getRemote(remoteName);
         if (remotePath == null) {
-            System.out.println("Remote directory not found.");
-            System.exit(0);
+            throw new CommandException("Remote directory not found.");
         }
         if (isNetworkRemote(remotePath)) {
             String headBranch = Store.getHead();
@@ -801,8 +786,7 @@ public class Repository {
         }
         File remoteSyncvault = new File(remotePath);
         if (!remoteSyncvault.exists() || !remoteSyncvault.isDirectory()) {
-            System.out.println("Remote directory not found.");
-            System.exit(0);
+            throw new CommandException("Remote directory not found.");
         }
 
         Store.Session remoteStore = Store.open(remoteSyncvault);
@@ -828,8 +812,8 @@ public class Repository {
                 }
             }
             if (!isAncestor) {
-                System.out.println("Please pull down remote changes before pushing.");
-                System.exit(0);
+                remoteStore.close();
+                throw new CommandException("Please pull down remote changes before pushing.");
             }
         }
 
@@ -883,8 +867,7 @@ public class Repository {
                              String token, File tlsCaFile, boolean tlsInsecure, boolean forceTls) throws IOException {
         String remotePath = Store.getRemote(remoteName);
         if (remotePath == null) {
-            System.out.println("Remote directory not found.");
-            System.exit(0);
+            throw new CommandException("Remote directory not found.");
         }
         if (isNetworkRemote(remotePath)) {
             NettyClient.fetch(remoteName, remotePath, branchName, token, tlsCaFile, tlsInsecure, forceTls);
@@ -892,15 +875,14 @@ public class Repository {
         }
         File remoteSyncvault = new File(remotePath);
         if (!remoteSyncvault.exists() || !remoteSyncvault.isDirectory()) {
-            System.out.println("Remote directory not found.");
-            System.exit(0);
+            throw new CommandException("Remote directory not found.");
         }
 
         Store.Session remoteStore = Store.open(remoteSyncvault);
         String remoteHead = remoteStore.getRef(branchName);
         if (remoteHead == null) {
-            System.out.println("That remote does not have that branch.");
-            System.exit(0);
+            remoteStore.close();
+            throw new CommandException("That remote does not have that branch.");
         }
 
         Store.begin();

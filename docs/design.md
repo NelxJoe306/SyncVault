@@ -48,7 +48,7 @@
 
 `check_file` / `check_id` 把 blob 字节写进工作区，不改暂存区。短 id 在 `findCommitId` 里找唯一前缀。没有，或者多于一个，都打印 `No commit with that id exists.`
 
-`check_branch` 和 `reset` 在改任何文件之前先看工作区。未跟踪、而且目标提交里也有这个文件，就打印错误并 `System.exit(0)`。通过之后才删除「当前跟踪、目标里没有」的文件，写下目标里的文件，清空 `stage` 和 `rm`。checkout 只改 `HEAD` 里的分支名。reset 把当前分支的指针移到目标提交。
+`check_branch` 和 `reset` 在改任何文件之前先看工作区。未跟踪、而且目标提交里也有这个文件，就抛出 `CommandException`（消息仍是原来的错误文本）。`Main` 捕获后打印该消息并以状态码 1 退出。通过之后才删除「当前跟踪、目标里没有」的文件，写下目标里的文件，清空 `stage` 和 `rm`。checkout 只改 `HEAD` 里的分支名。reset 把当前分支的指针移到目标提交。
 
 ## 分裂点和 merge
 
@@ -227,7 +227,7 @@ SyncVault 针对所有写操作定义了严密的事务边界，采用支持重�
   - `fetch`：拉取的所有 missing commits、blob 写入与远程跟踪分支 ref（如 `origin/master`）的更新包裹在本地数据库的一个事务中。
   - `push`：推送到远端的所有 missing commits、blob 写入与远端目标分支 ref 更新包裹在远端数据库的一个事务中。
 - **工作区与文件系统写入**：注意工作区（CWD）文件的创建、覆盖与删除属于文件系统 I/O，位于数据库事务外部执行，因此崩溃时工作区可能已部分更新，但数据库（ref/HEAD/暂存区/提交）要么全部生效要么全部不生效。
-- **回滚方式**：为了保持原有代码结构，业务代码里只写 `Store.begin()` ... `Store.commitTx()`，没有额外的 try/catch。进程在 `commitTx()` 之前因异常或 `System.exit` 结束时，SQLite 的 rollback journal 会把未提交的事务丢弃（下次打开数据库时自动回滚），效果与显式 rollback 相同。
+- **回滚方式**：业务代码在用户错误时抛出 `CommandException`（或已有的 `SyncVaultException`），不调用 `System.exit`。写路径仍是 `Store.begin()` ... `Store.commitTx()`，没有包一层 try/catch。若在 `commitTx()` 之前失败，调用方要么显式 `Store.rollback()`（例如 merge 发现没有变更），要么由 `Main` 打印消息后以状态码 1 结束进程。进程结束时，SQLite 的 rollback journal 会在下次打开数据库时丢弃未提交事务，效果与显式 rollback 相同。Netty 服务端把客户端错误收成 `ERROR` 帧，不会因此退出 JVM。
 
 ### 5. 暂存区表结构与设计理由
 

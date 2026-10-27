@@ -141,8 +141,7 @@ public class Commit implements Serializable, Dumpable {
             }
         }
         if (snapshot.equals(currCommitFiles_map())) {
-            System.out.println("No changes added to the commit.");
-            System.exit(0);
+            throw new CommandException("No changes added to the commit.");
         }
 
         Commit nc = new Commit(me, snapshot, currHead);
@@ -163,8 +162,7 @@ public class Commit implements Serializable, Dumpable {
      */
     public static void branch(String branch) throws IOException {
         if (Store.getRef(branch) != null) {
-            System.out.println("A branch with that name already exists.");
-            System.exit(0);
+            throw new CommandException("A branch with that name already exists.");
         }else {
             Store.setRef(branch, currHead);
         }
@@ -179,14 +177,12 @@ public class Commit implements Serializable, Dumpable {
     public static void rm_branch(String name) {
         /* if the branch exists*/
         if (Store.getRef(name) == null) {
-            System.out.println("A branch with that name does not exist.");
-            System.exit(0);
+            throw new CommandException("A branch with that name does not exist.");
         }
         /* if is the current branch */
         String curr_bran = Store.getHead();
         if (curr_bran.equals(name)) {
-            System.out.println("Cannot remove the current branch.");
-            System.exit(0);
+            throw new CommandException("Cannot remove the current branch.");
         }
 
         Store.deleteRef(name);

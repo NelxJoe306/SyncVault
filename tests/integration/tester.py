@@ -1,6 +1,6 @@
 import sys, re
 from subprocess import \
-     check_output, PIPE, STDOUT, DEVNULL, CalledProcessError, TimeoutExpired
+     run, PIPE, STDOUT, DEVNULL, TimeoutExpired
 from os.path import abspath, basename, dirname, exists, join, splitext
 from getopt import getopt, GetoptError
 from os import chdir, environ, getcwd, mkdir, remove, access, W_OK
@@ -57,8 +57,10 @@ The instructions each have one of the following forms:
    ...
    <<<
           Run syncvault.Main with COMMAND ARGUMENTS as its parameters.  Compare
-          its output with LINE1, LINE2, etc., reporting an error if there is
-          "sufficient" discrepency.  The <<< delimiter may be followed by
+          its stdout with LINE1, LINE2, etc., reporting an error if there is
+          "sufficient" discrepency.  User-facing command errors exit 1; that
+          status is not itself a failure, so the expected text stays the
+          contract.  The <<< delimiter may be followed by
           an asterisk (*), in which case, the preceding lines are treated as 
           Python regular expressions and matched accordingly. The directory
           or JAR file containing the syncvault.Main program is assumed to be
@@ -178,17 +180,17 @@ def doExecute(cmnd, dir, timeout, line_num):
 
         out = doCommand(full_cmnd, timeout, skip_first_line)
         return "OK", out
-    except CalledProcessError as excp:
-        return ("java syncvault.Main exited with code {}".format(excp.args[0]),
-                excp.output)
     except TimeoutExpired:
         return "timeout", None
     finally:
         chdir(here)
 
 def doCommand(full_cmnd, timeout, skip_first_line=False):
-    out = check_output(full_cmnd, shell=True, universal_newlines=True,
-                        stdin=DEVNULL, stderr=STDOUT, timeout=timeout)
+    # User errors exit 1 and still print the message tests compare. Do not
+    # treat a non-zero status as a harness failure.
+    completed = run(full_cmnd, shell=True, universal_newlines=True,
+                    stdin=DEVNULL, stdout=PIPE, stderr=STDOUT, timeout=timeout)
+    out = completed.stdout if completed.stdout is not None else ""
     if skip_first_line:
         out = out.split("\n", 1)[1]
 

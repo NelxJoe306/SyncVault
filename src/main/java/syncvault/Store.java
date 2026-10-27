@@ -48,6 +48,20 @@ public class Store {
         }
     }
 
+    /**
+     * Read-only consistency report. {@link #ok()} is false when any check failed.
+     * The database is not modified.
+     */
+    public record FsckResult(List<String> errors) {
+        public FsckResult {
+            errors = List.copyOf(errors);
+        }
+
+        public boolean ok() {
+            return errors.isEmpty();
+        }
+    }
+
     public static synchronized Session getDefault() {
         if (defaultSession == null) {
             defaultSession = open(Repository.SYNCVAULT_DIR);
@@ -268,6 +282,11 @@ public class Store {
 
     public static GcResult gc(long graceMillis) {
         return getDefault().gc(graceMillis);
+    }
+
+    /** Read-only check of refs, commit links, and object content hashes. */
+    public static FsckResult fsck() {
+        return getDefault().fsck();
     }
 
     /**
@@ -1005,6 +1024,191 @@ public class Store {
             }
         }
 
+        /**
+         * Read-only fsck. Checks ref targets, each commit's parents and file-map
+         * blobs, and {@code hash(content) == object id} for every object.
+         * Reuses {@link #traverseReachable} (the gc mark phase) and does not
+         * write the database.
+         */
+        public FsckResult fsck() {
+            Set<String> errors = new LinkedHashSet<>();
+            List<ObjectStat> objects = allObjects();
+            Map<String, String> typeByHash = new HashMap<>();
+            for (ObjectStat obj : objects) {
+                typeByHash.put(obj.hash(), obj.type());
+                byte[] data = getBlob(obj.hash());
+                if (data == null) {
+                    errors.add("error: object " + obj.hash() + " missing content");
+                    continue;
+                }
+                String actual = Utils.hash(data);
+                if (!actual.equals(obj.hash())) {
+                    errors.add("error: object " + obj.hash() + " content hash mismatch (" + obj.type() + ")");
+                }
+            }
+
+            for (Map.Entry<String, String> ref : allRefs().entrySet()) {
+                if (!"commit".equals(typeByHash.get(ref.getValue()))) {
+                    errors.add("error: ref " + ref.getKey() + " points to missing commit " + ref.getValue());
+                }
+            }
+            String head = getHead();
+            if (head != null && !head.isEmpty() && getRef(head) == null
+                    && !"commit".equals(typeByHash.get(head))) {
+                errors.add("error: HEAD points to missing commit " + head);
+            }
+            for (CommitParent edge : allCommitParents()) {
+                String label = edge.idx() == 1 ? "second parent" : "parent";
+                reportMissingParent(errors, edge.child(), edge.parent(), label, typeByHash);
+            }
+
+            Set<String> reachableCommits = new HashSet<>();
+            Set<String> reachableBlobs = new HashSet<>();
+            traverseReachable(reachableCommits, reachableBlobs, typeByHash, errors);
+
+            for (ObjectStat obj : objects) {
+                if ("commit".equals(obj.type()) && !reachableCommits.contains(obj.hash())) {
+                    inspectStoredCommit(obj.hash(), typeByHash, errors);
+                }
+            }
+
+            List<String> sorted = new ArrayList<>(errors);
+            Collections.sort(sorted);
+            return new FsckResult(sorted);
+        }
+
+        /**
+         * Mark commits and blobs reachable from refs, HEAD, and staged additions.
+         * This is the gc mark phase: first parent, second parent, and
+         * {@code commit_parent} edges. When {@code errors} is null the walk
+         * matches gc and skips missing objects. When {@code errors} is set,
+         * decode failures and dangling parents, blobs, and staged hashes are
+         * recorded and the walk continues.
+         */
+        private void traverseReachable(Set<String> reachableCommits,
+                                       Set<String> reachableBlobs,
+                                       Map<String, String> typeByHash,
+                                       Set<String> errors) {
+            for (Map.Entry<String, String> staged : stagedAdditions().entrySet()) {
+                String blobHash = staged.getValue();
+                if (blobHash != null && !blobHash.isEmpty()) {
+                    reachableBlobs.add(blobHash);
+                }
+                if (errors != null && !"blob".equals(typeByHash.get(blobHash))) {
+                    errors.add("error: stage " + staged.getKey() + " points to missing blob " + blobHash);
+                }
+            }
+
+            Queue<String> commitQueue = new ArrayDeque<>();
+            for (String refTarget : allRefs().values()) {
+                if (refTarget != null && !refTarget.isEmpty()) {
+                    commitQueue.add(refTarget);
+                }
+            }
+            String head = getHead();
+            if (head != null && !head.isEmpty()) {
+                String headRef = getRef(head);
+                if (headRef != null && !headRef.isEmpty()) {
+                    commitQueue.add(headRef);
+                } else {
+                    commitQueue.add(head);
+                }
+            }
+
+            Map<String, List<String>> parentEdges = new HashMap<>();
+            for (CommitParent cp : allCommitParents()) {
+                parentEdges.computeIfAbsent(cp.child(), k -> new ArrayList<>()).add(cp.parent());
+            }
+
+            while (!commitQueue.isEmpty()) {
+                String commitHash = commitQueue.poll();
+                if (commitHash == null || reachableCommits.contains(commitHash)) {
+                    continue;
+                }
+                Commit c;
+                try {
+                    c = getCommit(commitHash);
+                } catch (RuntimeException ex) {
+                    if (errors == null) {
+                        throw ex;
+                    }
+                    errors.add("error: object " + commitHash + " corrupt commit: " + ex.getMessage());
+                    continue;
+                }
+                if (c == null) {
+                    continue;
+                }
+                reachableCommits.add(commitHash);
+
+                if (c.getNameToHash() != null) {
+                    for (Map.Entry<String, String> file : c.getNameToHash().entrySet()) {
+                        String blobHash = file.getValue();
+                        if (blobHash != null && !blobHash.isEmpty()) {
+                            reachableBlobs.add(blobHash);
+                        }
+                        if (errors != null && !"blob".equals(typeByHash.get(blobHash))) {
+                            errors.add("error: commit " + commitHash + " file " + file.getKey()
+                                    + " missing blob " + blobHash);
+                        }
+                    }
+                }
+                if (errors != null) {
+                    reportMissingParent(errors, commitHash, c.getParent(), "parent", typeByHash);
+                    reportMissingParent(errors, commitHash, c.getSecondParent(), "second parent", typeByHash);
+                }
+
+                if (c.getParent() != null && !reachableCommits.contains(c.getParent())) {
+                    commitQueue.add(c.getParent());
+                }
+                if (c.getSecondParent() != null && !reachableCommits.contains(c.getSecondParent())) {
+                    commitQueue.add(c.getSecondParent());
+                }
+                List<String> extraParents = parentEdges.get(commitHash);
+                if (extraParents != null) {
+                    for (String p : extraParents) {
+                        if (p != null && !reachableCommits.contains(p)) {
+                            commitQueue.add(p);
+                        }
+                    }
+                }
+            }
+        }
+
+        private void inspectStoredCommit(String hash, Map<String, String> typeByHash, Set<String> errors) {
+            Commit c;
+            try {
+                c = getCommit(hash);
+            } catch (RuntimeException ex) {
+                errors.add("error: object " + hash + " corrupt commit: " + ex.getMessage());
+                return;
+            }
+            if (c == null) {
+                errors.add("error: object " + hash + " missing commit");
+                return;
+            }
+            reportMissingParent(errors, hash, c.getParent(), "parent", typeByHash);
+            reportMissingParent(errors, hash, c.getSecondParent(), "second parent", typeByHash);
+            if (c.getNameToHash() == null) {
+                return;
+            }
+            for (Map.Entry<String, String> file : c.getNameToHash().entrySet()) {
+                if (!"blob".equals(typeByHash.get(file.getValue()))) {
+                    errors.add("error: commit " + hash + " file " + file.getKey()
+                            + " missing blob " + file.getValue());
+                }
+            }
+        }
+
+        private static void reportMissingParent(Set<String> errors, String commitHash, String parent,
+                                                String label, Map<String, String> typeByHash) {
+            if (parent == null) {
+                return;
+            }
+            if (parent.isEmpty() || !"commit".equals(typeByHash.get(parent))) {
+                errors.add("error: commit " + commitHash + " missing " + label + " " + parent);
+            }
+        }
+
         public GcResult gc() {
             return gc(resolveDefaultGraceMs());
         }
@@ -1021,68 +1225,7 @@ public class Store {
                 transaction(() -> {
                     Set<String> reachableCommits = new HashSet<>();
                     Set<String> reachableBlobs = new HashSet<>();
-
-                    for (String blobHash : stagedAdditions().values()) {
-                        if (blobHash != null && !blobHash.isEmpty()) {
-                            reachableBlobs.add(blobHash);
-                        }
-                    }
-
-                    Queue<String> commitQueue = new ArrayDeque<>();
-                    for (String refTarget : allRefs().values()) {
-                        if (refTarget != null && !refTarget.isEmpty()) {
-                            commitQueue.add(refTarget);
-                        }
-                    }
-                    String head = getHead();
-                    if (head != null && !head.isEmpty()) {
-                        String headRef = getRef(head);
-                        if (headRef != null && !headRef.isEmpty()) {
-                            commitQueue.add(headRef);
-                        } else {
-                            commitQueue.add(head);
-                        }
-                    }
-
-                    Map<String, List<String>> parentEdges = new HashMap<>();
-                    for (CommitParent cp : allCommitParents()) {
-                        parentEdges.computeIfAbsent(cp.child(), k -> new ArrayList<>()).add(cp.parent());
-                    }
-
-                    while (!commitQueue.isEmpty()) {
-                        String commitHash = commitQueue.poll();
-                        if (commitHash == null || reachableCommits.contains(commitHash)) {
-                            continue;
-                        }
-                        Commit c = getCommit(commitHash);
-                        if (c == null) {
-                            continue;
-                        }
-                        reachableCommits.add(commitHash);
-
-                        if (c.getNameToHash() != null) {
-                            for (String blobHash : c.getNameToHash().values()) {
-                                if (blobHash != null && !blobHash.isEmpty()) {
-                                    reachableBlobs.add(blobHash);
-                                }
-                            }
-                        }
-
-                        if (c.getParent() != null && !reachableCommits.contains(c.getParent())) {
-                            commitQueue.add(c.getParent());
-                        }
-                        if (c.getSecondParent() != null && !reachableCommits.contains(c.getSecondParent())) {
-                            commitQueue.add(c.getSecondParent());
-                        }
-                        List<String> extraParents = parentEdges.get(commitHash);
-                        if (extraParents != null) {
-                            for (String p : extraParents) {
-                                if (p != null && !reachableCommits.contains(p)) {
-                                    commitQueue.add(p);
-                                }
-                            }
-                        }
-                    }
+                    traverseReachable(reachableCommits, reachableBlobs, null, null);
 
                     // Test hook to allow interleaving tests before querying objects
                     if (gcReachabilityHook != null) {

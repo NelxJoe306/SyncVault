@@ -33,6 +33,7 @@ public class Main {
      * serve
      * web
      * gc
+     * fsck
      */
     public static void main(String[] args) throws IOException {
         if (args.length == 0) {
@@ -229,6 +230,15 @@ public class Main {
                 } else {
                     System.out.println("Incorrect operands.");
                     System.exit(0);
+                }
+                break;
+            case "fsck":
+                if (args.length != 1) {
+                    System.out.println("Incorrect operands.");
+                    System.exit(0);
+                }
+                if (!Repository.fsck().ok()) {
+                    System.exit(1);
                 }
                 break;
             default:

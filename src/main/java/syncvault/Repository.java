@@ -1209,6 +1209,26 @@ public class Repository {
         return res;
     }
 
+    /**
+     * Read-only consistency check. Prints {@code fsck: ok} or one line per
+     * problem. Does not repair anything.
+     *
+     * @return the problems found; {@link Store.FsckResult#ok()} is false when
+     *         the caller should exit non-zero
+     */
+    public static Store.FsckResult fsck() {
+        Store.FsckResult result = Store.fsck();
+        if (result.ok()) {
+            System.out.println("fsck: ok");
+        } else {
+            for (String error : result.errors()) {
+                System.out.println(error);
+            }
+            System.out.println("fsck: found " + result.errors().size() + " error(s)");
+        }
+        return result;
+    }
+
     static boolean isNetworkRemote(String remotePath) {
         if (remotePath == null) {
             return false;

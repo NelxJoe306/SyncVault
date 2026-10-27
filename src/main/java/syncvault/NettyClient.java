@@ -204,7 +204,7 @@ public class NettyClient {
                         continue;
                     }
                     if (!remoteHave.contains(id)) {
-                        commits.add(Utils.serialize(c));
+                        commits.add(c.encode());
                         for (String blobHash : c.getNameToHash().values()) {
                             if (!blobs.containsKey(blobHash)) {
                                 byte[] localBlob = Store.getBlob(blobHash);

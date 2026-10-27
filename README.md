@@ -37,6 +37,8 @@ SyncVault 是一个轻量级的类似 Git 的版本控制系统（VCS）。本�
   - 定义了 `HashFunction` 抽象接口，提供可插拔的哈希算法支持（已包含 SHA-256 与 SHA-1 实现）。
 - **SQLite 存储引擎**：
   - 版本库全部元数据、提交、引用、暂存区及对象均存储于 `.syncvault/syncvault.db`（SQLite），提供 ACID 事务保证与单文件嵌入式存储，离线环境下无需运行任何外部数据库服务。
+- **显式提交 / 同步编码（0.1.0-SNAPSHOT，不兼容旧库）**：
+  - 提交对象与 Netty 同步帧使用 SVC1 / SVM1 字段编码，不再使用 Java 原生序列化。提交 id 是 SVC1 规范字节的哈希（默认 SHA-256）。已有仓库里的旧序列化对象不会被自动迁移，需要重新 `init`。格式与离线只读说明见 [docs/design.md](docs/design.md)。
 
 ## 目录结构
 

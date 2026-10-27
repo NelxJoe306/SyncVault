@@ -231,7 +231,11 @@ class Utils {
 
     /* SERIALIZATION UTILITIES */
 
-    /** Returns a byte array containing the serialized contents of OBJ. */
+    /**
+     * Java serialization for local debug files such as {@code DumpObj}.
+     * Commits and sync messages do not use this; see {@code Commit.encode}
+     * and {@code SyncMessage.encode}.
+     */
     static byte[] serialize(Serializable obj) {
         try {
             ByteArrayOutputStream stream = new ByteArrayOutputStream();

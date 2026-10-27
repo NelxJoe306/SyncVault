@@ -1,9 +1,6 @@
 package syncvault;
 
-import java.io.ByteArrayInputStream;
 import java.io.File;
-import java.io.IOException;
-import java.io.ObjectInputStream;
 import java.sql.*;
 import java.util.*;
 
@@ -352,7 +349,7 @@ public class Store {
         }
 
         public void putCommit(Commit c) {
-            byte[] data = Utils.serialize(c);
+            byte[] data = c.encode();
             try {
                 try (PreparedStatement pstmt = getConnection().prepareStatement(
                         "INSERT OR REPLACE INTO object (hash, type, data) VALUES (?, 'commit', ?)")) {
@@ -400,11 +397,9 @@ public class Store {
                 try (ResultSet rs = pstmt.executeQuery()) {
                     if (rs.next()) {
                         byte[] data = rs.getBytes(1);
-                        try (ObjectInputStream in = new ObjectInputStream(new ByteArrayInputStream(data))) {
-                            return (Commit) in.readObject();
-                        } catch (IOException | ClassNotFoundException e) {
-                            throw new SyncVaultException(e.getMessage());
-                        }
+                        Commit commit = Commit.decode(data);
+                        commit.setSelfHash(hash);
+                        return commit;
                     }
                     return null;
                 }

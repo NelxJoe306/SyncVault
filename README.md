@@ -1,7 +1,9 @@
 # SyncVault
 > 多设备资产同步引擎：本地 Git 子集 + Netty 同步 + SQLite 单库。
 
-<!-- 有截图后取消下一行注释：![提交 DAG 与冲突面板](docs/images/dag.png) -->
+![提交 DAG 与冲突面板](docs/images/dag.png)
+
+<p align="center"><img src="docs/images/sync-demo.gif" alt="两台机器 Netty 同步演示（约 30 秒）" width="720" /></p>
 
 ```text
   工作区 / CLI / Web UI（DAG + 冲突面板）
@@ -66,7 +68,8 @@
 │   └── workflows/
 │       └── ci.yml                     # GitHub Actions CI 工作流
 ├── docs/
-│   └── design.md                      # SyncVault 设计与数据结构说明
+│   ├── design.md                      # SyncVault 设计与数据结构说明
+│   └── images/                        # README 截图与同步演示 GIF
 ├── pom.xml                            # Maven 项目构建配置
 ├── README.md                          # 项目说明文档
 ├── scripts/

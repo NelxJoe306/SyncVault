@@ -172,10 +172,20 @@ scripts/run-integration-tests.sh
 ```
 
 ### 基准测试 (Benchmarks)
-在 `/tmp` 临时仓库中复现微基准测试（测量连续提交、`log`、`checkout` 以及本地 Netty `serve + push` 耗时，详细结果见 [docs/benchmarks.md](docs/benchmarks.md)）：
+在 `/tmp` 临时仓库中复现微基准测试（测量连续提交、`log`、`checkout` 以及本地 Netty `serve + push` 耗时）。完整方法与对比见 [docs/benchmarks.md](docs/benchmarks.md)（CSV：[docs/bench-results.csv](docs/bench-results.csv)）。
+
+| Scale | `commit_avg` med | `log` med | `status` med | `checkout` med | `netty_push` med |
+|------:|-----------------:|----------:|-------------:|---------------:|-----------------:|
+| 1,000 | 2.39 ms | 15.47 ms | 0.41 ms | 7.22 ms | 199.08 ms |
+| 10,000 | 1.99 ms | 155.54 ms | 1.02 ms | 6.50 ms | 1,689.93 ms |
+
+- 10-client concurrent Netty push stress (`scripts/concurrent-push-test.sh`): **PASSED**
+
 ```bash
 scripts/bench.sh
-# 或指定提交规模运行：
+scripts/bench.sh --smoke   # CI 快速冒烟
+scripts/concurrent-push-test.sh   # 10 客户端并发 Netty push 压力测试
+# 或指定提交规模运行（默认不含 Netty；Netty 用 scripts/bench.sh 或加 --with-netty）：
 java -jar target/syncvault-0.1.0-SNAPSHOT.jar bench 1000 5000 10000
 ```
 

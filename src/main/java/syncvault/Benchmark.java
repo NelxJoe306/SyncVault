@@ -79,7 +79,7 @@ public class Benchmark {
         }
 
         List<Integer> scales = new ArrayList<>();
-        boolean withNetty = true;
+        boolean withNetty = false;
         boolean smoke = false;
         int warmup = DEFAULT_WARMUP;
         int samples = DEFAULT_SAMPLES;
@@ -129,11 +129,6 @@ public class Benchmark {
         if (csvPath != null && !csvPath.isEmpty()) {
             writeCsvReport(summaries, withNetty, csvPath);
         }
-    }
-
-    private static ScaleResult spawnWorker(int n, boolean withNetty) throws Exception {
-        List<ScaleResult> list = spawnWorkerSamples(n, withNetty, 0, 1);
-        return list.get(0);
     }
 
     private static List<ScaleResult> spawnWorkerSamples(

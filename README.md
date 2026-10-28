@@ -4,6 +4,8 @@
 
 ![提交 DAG 与冲突面板](docs/images/dag.png)
 
+<p align="center"><img src="docs/images/sync-happy.gif" alt="两台机器 Netty 同步演示：A push → B pull（约 30 秒）" width="720" /></p>
+
 <p align="center"><img src="docs/images/sync-demo.gif" alt="两台机器并发 push → 冲突 → resolve → fsck（真实终端，约 20 秒）" width="960" /></p>
 
 **技术栈**：Java 17 · Netty 4 · SQLite（sqlite-jdbc）· Maven · JUnit 5 · Python 集成测试 · GitHub Actions
@@ -116,9 +118,6 @@ docs/                       design.md（设计与协议）· commands.md（命�
 - [x] GC 与 push 互斥、`fsck`、工作区原子写入与 journal 恢复
 - [x] Diff3 行级合并、`resolve`、Web 冲突面板
 - [x] 多采样基准、同机 git 对照、10 客户端并发压测
-- [ ] 服务端业务处理移出 IO 线程，并补并发吞吐测试
-- [ ] 大对象分批 / 流式传输
-- [ ] 压测中稳定覆盖 CAS 拒绝路径
 
 ## 背景
 

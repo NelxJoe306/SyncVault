@@ -104,6 +104,8 @@
 | 10,000 | checkout | 6.50 | 9.20 |
 | 10,000 | netty_push | 1689.93 | 1759.43 |
 
+**读数简析：** `commit_avg` 约 2 ms，且 1k→10k 略有下降（JIT / SQLite 页缓存保持热态）。10k `commit_batch` 的 p95 尖峰来自 `/tmp` 所在 ext4 偶发 journal flush，中位数才代表稳态吞吐。`log` 大致随 N 线性增长；`status` / `checkout` 相对历史深度几乎平坦（跟踪文件少）。`netty_push` 随时对象传输量与哈希校验增长。
+
 同机对照 `git 2.47.3`（N=1000，med / p95 ms）：
 
 | Operation | SyncVault | git |
@@ -113,11 +115,15 @@
 | checkout | 7.22 / 9.30 | 3.46 / 3.95 |
 | commit_batch | 2389.05 / 2453.05 | 4721.17 / 4819.29 |
 
+**对照简析：** `log` 与 git 中位数基本持平。SyncVault 的 `status` 与批量 `commit` 更快（进程内热 JVM，无 fork/exec）；`checkout` 更慢（需写 workspace journal 并原子更新 SQLite）。
+
 并发 Netty push（`scripts/concurrent-push-test.sh`，10 客户端）：**10/10 PASSED**（55 次 push 尝试；CAS 拒 1、non-FF 拒 44；hub DAG 56 提交；`fsck: ok`）。
 
-CI：`main` 上 build + 集成测试 + `bench --smoke` 通过（见 [Actions](https://github.com/NelxJoe306/SyncVault/actions/workflows/ci.yml)）。
+**并发简析：** CAS / non-FF 拒绝后客户端 pull 再试可收敛；`fsck: ok` 说明争用下仓库仍一致。
 
-完整方法与复现步骤见 [docs/benchmarks.md](docs/benchmarks.md)。
+CI：`main` 上 build + 集成测试 + `bench --smoke` 通过（见 [Actions](https://github.com/NelxJoe306/SyncVault/actions/workflows/ci.yml)）。CI smoke 只验证基准 harness 可用，**不是**性能门禁。
+
+完整方法、环境与复现步骤见 [docs/benchmarks.md](docs/benchmarks.md)。
 
 ## 构建与运行
 

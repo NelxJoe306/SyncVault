@@ -85,6 +85,40 @@
         └── tester.py                  # 集成测试驱动脚本
 ```
 
+## 测试与基准结果
+
+多采样微基准（`/tmp`，warmup=1 + 5 samples；原始数据 [docs/bench-results.csv](docs/bench-results.csv)）。单位：ms。
+
+| Scale | op | median | p95 |
+|------:|----|-------:|----:|
+| 1,000 | commit_batch | 2389.05 | 2453.05 |
+| 1,000 | commit_avg | 2.39 | 2.45 |
+| 1,000 | log | 15.47 | 21.53 |
+| 1,000 | status | 0.41 | 0.48 |
+| 1,000 | checkout | 7.22 | 9.30 |
+| 1,000 | netty_push | 199.08 | 237.82 |
+| 10,000 | commit_batch | 19857.15 | 98671.44 |
+| 10,000 | commit_avg | 1.99 | 9.87 |
+| 10,000 | log | 155.54 | 203.40 |
+| 10,000 | status | 1.02 | 1.55 |
+| 10,000 | checkout | 6.50 | 9.20 |
+| 10,000 | netty_push | 1689.93 | 1759.43 |
+
+同机对照 `git 2.47.3`（N=1000，med / p95 ms）：
+
+| Operation | SyncVault | git |
+|---|---:|---:|
+| log | 15.47 / 21.53 | 15.45 / 16.25 |
+| status | 0.41 / 0.48 | 1.63 / 1.86 |
+| checkout | 7.22 / 9.30 | 3.46 / 3.95 |
+| commit_batch | 2389.05 / 2453.05 | 4721.17 / 4819.29 |
+
+并发 Netty push（`scripts/concurrent-push-test.sh`，10 客户端）：**10/10 PASSED**（55 次 push 尝试；CAS 拒 1、non-FF 拒 44；hub DAG 56 提交；`fsck: ok`）。
+
+CI：`main` 上 build + 集成测试 + `bench --smoke` 通过（见 [Actions](https://github.com/NelxJoe306/SyncVault/actions/workflows/ci.yml)）。
+
+完整方法与复现步骤见 [docs/benchmarks.md](docs/benchmarks.md)。
+
 ## 构建与运行
 
 ### 环境要求
@@ -172,14 +206,7 @@ scripts/run-integration-tests.sh
 ```
 
 ### 基准测试 (Benchmarks)
-在 `/tmp` 临时仓库中复现微基准测试（测量连续提交、`log`、`checkout` 以及本地 Netty `serve + push` 耗时）。完整方法与对比见 [docs/benchmarks.md](docs/benchmarks.md)（CSV：[docs/bench-results.csv](docs/bench-results.csv)）。
-
-| Scale | `commit_avg` med | `log` med | `status` med | `checkout` med | `netty_push` med |
-|------:|-----------------:|----------:|-------------:|---------------:|-----------------:|
-| 1,000 | 2.39 ms | 15.47 ms | 0.41 ms | 7.22 ms | 199.08 ms |
-| 10,000 | 1.99 ms | 155.54 ms | 1.02 ms | 6.50 ms | 1,689.93 ms |
-
-- 10-client concurrent Netty push stress (`scripts/concurrent-push-test.sh`): **PASSED**
+复现命令见下；摘要数字与同机 git 对照、并发 push、CI 说明见上文 **「测试与基准结果」**，完整方法见 [docs/benchmarks.md](docs/benchmarks.md)。
 
 ```bash
 scripts/bench.sh

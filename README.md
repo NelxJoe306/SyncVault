@@ -175,6 +175,8 @@ scripts/run-integration-tests.sh
 在 `/tmp` 临时仓库中复现微基准测试（测量连续提交、`log`、`checkout` 以及本地 Netty `serve + push` 耗时，详细结果见 [docs/benchmarks.md](docs/benchmarks.md)）：
 ```bash
 scripts/bench.sh
+scripts/bench.sh --smoke   # CI 快速冒烟
+scripts/concurrent-push-test.sh   # 10 客户端并发 Netty push 压力测试
 # 或指定提交规模运行：
 java -jar target/syncvault-0.1.0-SNAPSHOT.jar bench 1000 5000 10000
 ```

@@ -1,0 +1,13 @@
+scale,op,median_ms,p95_ms,samples,notes
+1000,commit_batch,2389.05,2453.05,5,N sequential add+commit operations across 5 tracked files (warmup=1; workdir=/tmp (ext4; often tmpfs))
+1000,commit_avg,2.39,2.45,5,Per-commit mean latency across N sequential commits (warmup=1; workdir=/tmp (ext4; often tmpfs))
+1000,log,15.47,21.53,5,First-parent history traversal from HEAD to root with stdout redirected (warmup=1; workdir=/tmp (ext4; often tmpfs))
+1000,status,0.41,0.48,5,Workspace and staging status inspection at tip with 5 tracked files (warmup=1; workdir=/tmp (ext4; often tmpfs))
+1000,checkout,7.22,9.30,5,Branch switch early (#1) -> master (#N) updating working tree (warmup=1; workdir=/tmp (ext4; often tmpfs))
+1000,netty_push,199.08,237.82,5,Localhost TCP Netty serve+push of N commits to fresh remote (warmup=1; workdir=/tmp (ext4; often tmpfs))
+10000,commit_batch,19857.15,98671.44,5,N sequential add+commit operations across 5 tracked files (warmup=1; workdir=/tmp (ext4; often tmpfs))
+10000,commit_avg,1.99,9.87,5,Per-commit mean latency across N sequential commits (warmup=1; workdir=/tmp (ext4; often tmpfs))
+10000,log,155.54,203.40,5,First-parent history traversal from HEAD to root with stdout redirected (warmup=1; workdir=/tmp (ext4; often tmpfs))
+10000,status,1.02,1.55,5,Workspace and staging status inspection at tip with 5 tracked files (warmup=1; workdir=/tmp (ext4; often tmpfs))
+10000,checkout,6.50,9.20,5,Branch switch early (#1) -> master (#N) updating working tree (warmup=1; workdir=/tmp (ext4; often tmpfs))
+10000,netty_push,1689.93,1759.43,5,Localhost TCP Netty serve+push of N commits to fresh remote (warmup=1; workdir=/tmp (ext4; often tmpfs))

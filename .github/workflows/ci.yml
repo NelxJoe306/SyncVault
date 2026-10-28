@@ -30,3 +30,6 @@ jobs:
 
       - name: Run integration tests
         run: bash scripts/run-integration-tests.sh
+
+      - name: Benchmark harness smoke
+        run: BENCH_REBUILD=0 bash scripts/bench.sh --smoke

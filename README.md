@@ -4,7 +4,7 @@
 
 ![提交 DAG 与冲突面板](docs/images/dag.png)
 
-<p align="center"><img src="docs/images/sync-demo.gif" alt="两台机器 Netty 同步演示（约 30 秒）" width="720" /></p>
+<p align="center"><img src="docs/images/sync-demo.gif" alt="两台机器并发 push → 冲突 → resolve → fsck（真实终端，约 20 秒）" width="960" /></p>
 
 **技术栈**：Java 17 · Netty 4 · SQLite（sqlite-jdbc）· Maven · JUnit 5 · Python 集成测试 · GitHub Actions
 
@@ -60,7 +60,7 @@ $SV push origin master
 $SV web 8080     # 浏览器打开 http://127.0.0.1:8080
 ```
 
-令牌鉴权、TLS（`nettys://`）、`gc`、`fsck`、`resolve` 等完整命令见 [docs/commands.md](docs/commands.md)。
+令牌鉴权、TLS（`nettys://`）、`gc`、`fsck`、`resolve` 等完整命令见 [docs/commands.md](docs/commands.md)。README 顶部 GIF 由真实 CLI 录制，可复现：`bash scripts/record-demo.sh`（需本机已装 [VHS](https://github.com/charmbracelet/vhs)，见 [scripts/demo.tape](scripts/demo.tape)）。
 
 ## 验证与数据
 
@@ -103,7 +103,7 @@ src/main/java/syncvault/    核心：Repository · Store · Diff3 · NettyServer
 src/main/resources/web/     Web UI（Vis.js 提交图）
 src/test/java/syncvault/    JUnit 5 测试
 tests/integration/          Python 驱动的命令级集成测试
-scripts/                    run-integration-tests.sh · bench.sh · concurrent-push-test.sh
+scripts/                    run-integration-tests.sh · bench.sh · concurrent-push-test.sh · demo.tape · record-demo.sh
 docs/                       design.md（设计与协议）· commands.md（命令参考）· benchmarks.md · bench-results.csv
 .github/workflows/          ci.yml（构建 · 集成测试 · bench --smoke）
 ```

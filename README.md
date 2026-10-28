@@ -1,238 +1,125 @@
 # SyncVault
-> 多设备资产同步引擎：本地 Git 子集 + Netty 同步 + SQLite 单库。
+
+> 多设备资产同步引擎：一个用 Java 实现的 Git 子集，带 Netty 同步协议、SQLite 单库存储和可视化冲突面板。
 
 ![提交 DAG 与冲突面板](docs/images/dag.png)
 
 <p align="center"><img src="docs/images/sync-demo.gif" alt="两台机器 Netty 同步演示（约 30 秒）" width="720" /></p>
 
+**技术栈**：Java 17 · Netty 4 · SQLite（sqlite-jdbc）· Maven · JUnit 5 · Python 集成测试 · GitHub Actions
+
+**一句话**：两台机器之间能安全地同步一个版本库——并发 push 不会丢提交，传输中被篡改的对象会被拒绝，写到一半断电也能恢复。
+
+## 这个项目想解决什么问题
+
+同步多份数据副本时，真正难的不是"把文件传过去"，而是这几件事：
+
+| 问题 | SyncVault 的做法 | 在哪里 |
+|---|---|---|
+| 两个设备同时 push 同一分支，后到的覆盖先到的 | push 携带 `expectedOldTip`，服务端在仓库锁和单个 SQLite 事务里做 compare-and-swap，并拒绝非快进更新 | [design.md](docs/design.md) 的 Push 流程 |
+| 对端发来的对象内容和声称的 id 不一致 | 入库前用当前哈希函数重算 blob 和 commit，不一致整笔回滚 | `NettyServer` / `Store` |
+| 反序列化不可信输入 | 放弃 Java 原生序列化，改用带魔数与版本号的显式编码（SVC1 提交 / SVM1 同步帧） | design.md 的 SVC1 / SVM1 |
+| GC 清理时恰好有 push 在写入，新对象被误删 | `RepoLock`（JVM `ReentrantLock` + OS `FileLock`）互斥，加对象宽限期与在途写入登记 | `RepoLock` / `Store` |
+| checkout / merge 写工作区到一半崩溃，留下半残状态 | 临时文件 + `ATOMIC_MOVE`，多文件操作写 journal，提供 `abort` / `continue` 恢复 | `WorkspaceJournal` |
+| criss-cross 合并时选错分裂点 | 用递归 CTE 求公共祖先并排除被其他公共祖先支配的节点 | design.md 的 CTE 一节 |
+| 冲突难以阅读和解决 | 行级 diff3 + Web 冲突面板，支持 Use Ours / Use Theirs | `Diff3` / `WebServer` |
+
+## 架构
+
 ```text
-  工作区 / CLI / Web UI（DAG + 冲突面板）
-            │
-            ▼
-     SyncVault 核心（提交 · Diff3 · journal）
-            │
-     ┌──────┴──────┐
-     ▼             ▼
-  SQLite 对象库    Netty push / fetch / pull
-  (.syncvault.db)  (token · 可选 TLS)
+   CLI（Main）          Web UI（DAG + 冲突面板，仅本机）
+        │                      │
+        └──────────┬───────────┘
+                   ▼
+        Repository（命令）· Diff3 · WorkspaceJournal
+                   │
+        ┌──────────┴───────────┐
+        ▼                      ▼
+   Store（SQLite 单库）    NettyClient ⇄ NettyServer
+   .syncvault/syncvault.db  SVM1 帧 · 共享令牌 · 可选 TLS
 ```
 
-- **多设备同步**：Netty `push` / `fetch` / `pull`，共享令牌鉴权，可选 TLS（`nettys://`）。
-- **逐行 Diff3 + 冲突面板**：命令行 `resolve`；本地 Web 展示提交 **DAG + 冲突面板**，支持 Ours / Theirs 一键解决。
-- **可靠本地仓**：SQLite 单库对象存储，`gc` / 只读 `fsck`，工作区原子写入与 journal 可恢复。
+SQLite 中有对象、提交元数据、父子关系、引用、暂存新增 / 删除、远程、元数据共 8 张表，所有写操作的事务边界见 [design.md](docs/design.md)。
 
-## 当前功能
+## 30 秒体验
 
-当前版本实现了 Git 的核心基础子集（命令均在 `Main.java` 中实现）：
+```bash
+mvn -B package -DskipTests
+SV="java -jar $(pwd)/target/syncvault-0.1.0-SNAPSHOT.jar"
 
-- **基础版本控制命令**：
-  - `init`：初始化全新的版本控制仓库。
-  - `add`：将工作区文件快照暂存到暂存区。
-  - `commit`：提交暂存区变更并生成历史提交节点。
-  - `rm`：从暂存区取消暂存，或标记删除受版本控制的文件并从工作区移除。
-  - `log`：展示当前分支从 HEAD 起的提交历史记录。
-  - `global-log`：展示仓库中所有提交的历史记录。
-  - `find`：根据提交信息（commit message）查找提交 ID。
-  - `status`：显示当前分支、暂存新增、暂存删除、修改未暂存以及未跟踪文件的状态。
-  - `checkout`：检出指定提交的文件、当前提交的文件或切换分支。
-  - `branch`：创建新分支。
-  - `rm-branch`：删除指定分支指针。
-  - `reset`：将当前分支 HEAD 回滚至指定提交并恢复工作区。
-  - `merge`：将指定分支合并到当前分支，支持冲突处理与分叉点（split point）定位。
-  - `resolve <file> --ours|--theirs|[--combined]`：按侧选择解决工作区冲突标记并自动 `add` 暂存；`resolve --all --ours|--theirs` 可一次处理全部冲突文件。
-  - `gc [--grace-seconds=<s>]`：从所有分支引用、`HEAD` 与暂存区出发进行可达性分析，清理不可达的提交和 Blob 对象，通过仓库锁保证与 push 互斥，并执行 SQLite `VACUUM` 回收磁盘空间。
-  - `fsck`：只读一致性检查。确认引用指向的提交存在，每个提交的父提交和文件映射目标存在，并且对象内容的哈希等于 `object_id`。发现问题则打印错误并以非零状态退出。没有 `--fix`。
-- **远程仓库基础命令**：
-  - `add-remote`：添加远程仓库信息与关联路径或网络地址（支持本地目录路径、`host:port`、`netty://host:port` 以及 TLS 加密的 `nettys://host:port`）。
-  - `rm-remote`：移除远程仓库配置。
-  - `push`：将本地分支推送到远程仓库（网络远程支持 `--token`、`--tls-ca`、`--tls-insecure`）。
-  - `fetch`：从远程仓库拉取提交与分支历史（网络远程支持 `--token`、`--tls-ca`、`--tls-insecure`）。
-  - `pull`：从远程拉取并合并至当前分支（网络远程支持 `--token`、`--tls-ca`、`--tls-insecure`）。
-  - `serve [port]`：启动基于 Netty 的 TCP 同步服务端（默认端口 `9418`），支持共享令牌鉴权（`--token` / `SYNCVAULT_SYNC_TOKEN` / `.syncvault/sync-token`）与可选 TLS 加密（`--tls-cert` + `--tls-key` / `SYNCVAULT_TLS_CERT` + `SYNCVAULT_TLS_KEY`）。
-  - `web [port]`：启动本地 Web（默认端口 `8080`）：提交 **DAG + 冲突面板**，以及提交详情 / 文件预览；冲突可通过 Use Ours / Use Theirs 一键解决（`POST /api/resolve`，仅本机工作区）。
-- **可插拔哈希架构**：
-  - 定义了 `HashFunction` 抽象接口，提供可插拔的哈希算法支持（已包含 SHA-256 与 SHA-1 实现）。
-- **SQLite 存储引擎**：
-  - 版本库全部元数据、提交、引用、暂存区及对象均存储于 `.syncvault/syncvault.db`（SQLite），提供 ACID 事务保证与单文件嵌入式存储，离线环境下无需运行任何外部数据库服务。
-- **显式提交 / 同步编码（0.1.0-SNAPSHOT，不兼容旧库）**：
-  - 提交对象与 Netty 同步帧使用 SVC1 / SVM1 字段编码，不再使用 Java 原生序列化。提交 id 是 SVC1 规范字节的哈希（默认 SHA-256）。已有仓库里的旧序列化对象不会被自动迁移，需要重新 `init`。格式与离线只读说明见 [docs/design.md](docs/design.md)。
-- **工作区原子更新与事务日志 (Atomic Workspace Updates)**：
-  - `checkout`、`reset`、`merge` 等工作区写入操作采用「临时文件落地 + 原子 rename」机制，保证单个文件在写入中断时绝不产生截断或空文件半残状态。
-  - 多文件工作区切换引入事务日志（`.syncvault/workspace_journal`），中断时在启动期提供明确的可恢复状态（`syncvault abort` 回滚至一致原状态，`syncvault continue` 或 `recover --continue` 前进至目标状态），杜绝工作区与数据库状态静默半残。
+# 终端 A：服务端
+mkdir hub && cd hub && $SV init && $SV serve 9418
+
+# 终端 B：客户端（同样先定义一次 SV 变量）
+mkdir dev1 && cd dev1 && $SV init
+echo hello > a.txt && $SV add a.txt && $SV commit "first"
+$SV add-remote origin localhost:9418
+$SV push origin master
+
+# 看提交图和冲突面板
+$SV web 8080     # 浏览器打开 http://127.0.0.1:8080
+```
+
+令牌鉴权、TLS（`nettys://`）、`gc`、`fsck`、`resolve` 等完整命令见 [docs/commands.md](docs/commands.md)。
+
+## 验证与数据
+
+**测试**：90+ 个 JUnit 5 用例（同步协议编码、CAS 与 push/GC 互斥、工作区原子性、fsck、Diff3、Web API 等）；Python 驱动的命令级集成测试；CI 在每次 push / PR 上跑构建、集成测试和基准 harness 冒烟。
+
+**10 客户端并发 push 压测**（`scripts/concurrent-push-test.sh`，真实 JAR、真实 TCP）：
+
+- 10 个客户端竞争同一分支，被拒绝后经 `pull` 重试，10/10 最终成功
+- 55 次 push 尝试：CAS 拒绝 1 次，非快进拒绝 44 次
+- hub 最终 DAG 共 56 个提交（1 初始 + 10 客户端 + 45 合并）；hub 与各客户端 `fsck` 均通过，文件与提交信息齐全
+
+**微基准**（预热 1 次 + 采样 5 次，单位 ms，原始数据见 [docs/bench-results.csv](docs/bench-results.csv)）：
+
+| 规模 | 操作 | 中位数 | p95 |
+|---:|---|---:|---:|
+| 1,000 提交 | 单次 add+commit（均值） | 2.39 | 2.45 |
+| 1,000 提交 | `log` | 15.47 | 21.53 |
+| 1,000 提交 | Netty push 全部历史 | 199.08 | 237.82 |
+| 10,000 提交 | 单次 add+commit（均值） | 1.99 | 9.87 |
+| 10,000 提交 | `log` | 155.54 | 203.40 |
+| 10,000 提交 | Netty push 全部历史 | 1,689.93 | 1,759.43 |
+
+与同机 `git 2.47.3` 对照（1,000 提交，中位数）：`log` 15.47 ms 对 15.45 ms；`checkout` 7.22 ms 对 3.46 ms（SyncVault 更慢，因为要写 journal 并更新 SQLite）。`status` 与批量 `commit` 的差距主要来自 SyncVault 在热 JVM 内执行、git 每次启动新进程，**不是同口径的性能优势**。
+
+> 10,000 提交的批量 commit 有一次样本明显偏慢（p95 远高于中位数），目前推测与测试机 ext4 刷盘有关，尚未在 tmpfs 上对照验证。完整方法、环境与复现命令见 [docs/benchmarks.md](docs/benchmarks.md)。
+
+## 设计取舍与已知局限
+
+- **为什么是 SQLite 而不是文件目录或 MySQL**：离线可用、单文件零配置、成熟的事务与崩溃恢复，详见 design.md。
+- **服务端目前对所有连接串行处理**：`NettyServer` 以会话为粒度加锁，并发能力受限于此；压测验证的是一致性，不是吞吐。
+- **同步以整批对象为单位**：单帧上限 64 MB，尚无分批 / 流式传输，超大历史的首次 push 会受此限制。
+- **鉴权是共享令牌**：未配置令牌时默认免密（为兼容旧用法），实际使用应开启令牌与 TLS。
+- **不兼容旧库**：提交 id 的计算方式已改变，旧仓库需要重新 `init`。
+- **基准范围有限**：工作区仅 5 个小文本文件，不覆盖大文件和二进制。
 
 ## 目录结构
 
 ```text
-.
-├── .github/
-│   └── workflows/
-│       └── ci.yml                     # GitHub Actions CI 工作流
-├── docs/
-│   ├── design.md                      # SyncVault 设计与数据结构说明
-│   └── images/                        # README 截图与同步演示 GIF
-├── pom.xml                            # Maven 项目构建配置
-├── README.md                          # 项目说明文档
-├── scripts/
-│   └── run-integration-tests.sh       # 集成测试运行脚本
-├── src/
-│   ├── main/java/syncvault/           # SyncVault 核心源码
-│   ├── main/resources/web/            # 本地 Web UI 静态资源 (HTML/CSS/JS)
-│   └── test/java/syncvault/           # JUnit 5 单元测试
-└── tests/
-    └── integration/                   # 集成测试套件与测试用例
-        ├── samples/                   # 基础功能集成测试
-        ├── student_tests/             # 边界用例与扩展功能集成测试
-        └── tester.py                  # 集成测试驱动脚本
-```
-
-## 测试与基准结果
-
-多采样微基准（`/tmp`，warmup=1 + 5 samples；原始数据 [docs/bench-results.csv](docs/bench-results.csv)）。单位：ms。
-
-| Scale | op | median | p95 |
-|------:|----|-------:|----:|
-| 1,000 | commit_batch | 2389.05 | 2453.05 |
-| 1,000 | commit_avg | 2.39 | 2.45 |
-| 1,000 | log | 15.47 | 21.53 |
-| 1,000 | status | 0.41 | 0.48 |
-| 1,000 | checkout | 7.22 | 9.30 |
-| 1,000 | netty_push | 199.08 | 237.82 |
-| 10,000 | commit_batch | 19857.15 | 98671.44 |
-| 10,000 | commit_avg | 1.99 | 9.87 |
-| 10,000 | log | 155.54 | 203.40 |
-| 10,000 | status | 1.02 | 1.55 |
-| 10,000 | checkout | 6.50 | 9.20 |
-| 10,000 | netty_push | 1689.93 | 1759.43 |
-
-**读数简析：** `commit_avg` 约 2 ms，且 1k→10k 略有下降（JIT / SQLite 页缓存保持热态）。10k `commit_batch` 的 p95 尖峰来自 `/tmp` 所在 ext4 偶发 journal flush，中位数才代表稳态吞吐。`log` 大致随 N 线性增长；`status` / `checkout` 相对历史深度几乎平坦（跟踪文件少）。`netty_push` 随时对象传输量与哈希校验增长。
-
-同机对照 `git 2.47.3`（N=1000，med / p95 ms）：
-
-| Operation | SyncVault | git |
-|---|---:|---:|
-| log | 15.47 / 21.53 | 15.45 / 16.25 |
-| status | 0.41 / 0.48 | 1.63 / 1.86 |
-| checkout | 7.22 / 9.30 | 3.46 / 3.95 |
-| commit_batch | 2389.05 / 2453.05 | 4721.17 / 4819.29 |
-
-**对照简析：** `log` 与 git 中位数基本持平。SyncVault 的 `status` 与批量 `commit` 更快（进程内热 JVM，无 fork/exec）；`checkout` 更慢（需写 workspace journal 并原子更新 SQLite）。
-
-并发 Netty push（`scripts/concurrent-push-test.sh`，10 客户端）：**10/10 PASSED**（55 次 push 尝试；CAS 拒 1、non-FF 拒 44；hub DAG 56 提交；`fsck: ok`）。
-
-**并发简析：** CAS / non-FF 拒绝后客户端 pull 再试可收敛；`fsck: ok` 说明争用下仓库仍一致。
-
-CI：`main` 上 build + 集成测试 + `bench --smoke` 通过（见 [Actions](https://github.com/NelxJoe306/SyncVault/actions/workflows/ci.yml)）。CI smoke 只验证基准 harness 可用，**不是**性能门禁。
-
-完整方法、环境与复现步骤见 [docs/benchmarks.md](docs/benchmarks.md)。
-
-## 构建与运行
-
-### 环境要求
-- JDK 17+
-- Apache Maven 3.6+
-
-### 构建
-使用 Maven 进行编译与打包：
-```bash
-mvn -B package
-```
-
-### 运行
-可以通过生成的独立可执行 JAR 文件运行：
-```bash
-java -jar target/syncvault-0.1.0-SNAPSHOT.jar init
-```
-
-也可以直接通过类路径运行：
-```bash
-java -cp target/classes syncvault.Main init
-```
-
-命令错误（错误参数、仓库检查失败、`fsck` 发现问题等）打印原有提示并以状态码 1 退出。成功命令由 `Main` 正常返回，状态码为 0。`serve` 对客户端协议错误返回 `ERROR` 帧，不会因此结束进程。环境变量一律使用 `SYNCVAULT_*`（例如 `SYNCVAULT_SYNC_TOKEN`、`SYNCVAULT_GC_GRACE_MS`）。
-
-启动 Netty 远程同步服务端并从客户端关联同步：
-```bash
-# 服务端仓库目录下启动服务（默认监听 9418 端口，无配置时保持明文免密兼容）
-java -jar target/syncvault-0.1.0-SNAPSHOT.jar serve 9418
-
-# 客户端仓库添加远程地址并执行 push / fetch / pull
-java -jar target/syncvault-0.1.0-SNAPSHOT.jar add-remote origin localhost:9418
-java -jar target/syncvault-0.1.0-SNAPSHOT.jar push origin master
-```
-
-配置共享令牌鉴权与 TLS 加密同步（优先级：命令行参数 `--token` > 环境变量 `SYNCVAULT_SYNC_TOKEN` > 仓库内文件 `.syncvault/sync-token`；本地目录远程无需令牌）：
-```bash
-# 方式 1：通过仓库文件或环境变量配置共享令牌 + TLS 服务端
-echo "my-shared-secret" > .syncvault/sync-token
-java -jar target/syncvault-0.1.0-SNAPSHOT.jar serve 9418 \
-  --tls-cert=server-cert.pem --tls-key=server-key.pem
-
-# 也可通过环境变量指定：
-# SYNCVAULT_SYNC_TOKEN=my-shared-secret SYNCVAULT_TLS_CERT=server-cert.pem SYNCVAULT_TLS_KEY=server-key.pem \
-#   java -jar target/syncvault-0.1.0-SNAPSHOT.jar serve 9418
-
-# 客户端使用 nettys:// 协议连接，指定受信任 CA 证书（或放入 .syncvault/tls-ca.pem / 设置 SYNCVAULT_TLS_CA）
-echo "my-shared-secret" > .syncvault/sync-token
-java -jar target/syncvault-0.1.0-SNAPSHOT.jar add-remote origin nettys://localhost:9418
-java -jar target/syncvault-0.1.0-SNAPSHOT.jar push origin master --tls-ca=server-cert.pem
-
-# 开发测试自签名证书也可显式使用 --tls-insecure（或 SYNCVAULT_TLS_INSECURE=true）跳过证书链校验：
-java -jar target/syncvault-0.1.0-SNAPSHOT.jar fetch origin master --token=my-shared-secret --tls-insecure
-```
-
-启动本地只读 Web UI（默认监听 `8080` 端口）：
-```bash
-java -jar target/syncvault-0.1.0-SNAPSHOT.jar web 8080
-```
-
-执行垃圾回收清理不可达对象并收缩数据库体积（支持可选宽限期与仓库锁并发保护）：
-```bash
-java -jar target/syncvault-0.1.0-SNAPSHOT.jar gc
-# 或指定宽限期（例如保留近 60 秒内写入的对象）
-java -jar target/syncvault-0.1.0-SNAPSHOT.jar gc --grace-seconds=60
-```
-
-只读检查引用、提交链接和对象哈希（不修改仓库；有错误时进程退出码非零）：
-```bash
-java -jar target/syncvault-0.1.0-SNAPSHOT.jar fsck
-```
-
-## 测试
-
-### 单元测试
-运行 JUnit 5 单元测试：
-```bash
-mvn test
-```
-
-### 集成测试
-运行由 Python 驱动的全量集成测试套件：
-```bash
-scripts/run-integration-tests.sh
-```
-
-### 基准测试 (Benchmarks)
-复现命令见下；摘要数字与同机 git 对照、并发 push、CI 说明见上文 **「测试与基准结果」**，完整方法见 [docs/benchmarks.md](docs/benchmarks.md)。
-
-```bash
-scripts/bench.sh
-scripts/bench.sh --smoke   # CI 快速冒烟
-scripts/concurrent-push-test.sh   # 10 客户端并发 Netty push 压力测试
-# 或指定提交规模运行（默认不含 Netty；Netty 用 scripts/bench.sh 或加 --with-netty）：
-java -jar target/syncvault-0.1.0-SNAPSHOT.jar bench 1000 5000 10000
+src/main/java/syncvault/    核心：Repository · Store · Diff3 · NettyServer/Client · SyncMessage · RepoLock · WorkspaceJournal · WebServer
+src/main/resources/web/     Web UI（Vis.js 提交图）
+src/test/java/syncvault/    JUnit 5 测试
+tests/integration/          Python 驱动的命令级集成测试
+scripts/                    run-integration-tests.sh · bench.sh · concurrent-push-test.sh
+docs/                       design.md（设计与协议）· commands.md（命令参考）· benchmarks.md · bench-results.csv
+.github/workflows/          ci.yml（构建 · 集成测试 · bench --smoke）
 ```
 
 ## 路线图
 
-- [x] SQLite 存储
-- [x] Netty push/pull 多设备同步
-- [x] 远程同步鉴权与 TLS 加密 (`HELLO` 共享令牌 + `nettys://` TLS)
-- [x] 三方合并改进 (Diff3 行级三方合并 + Web UI 冲突可视化)
-- [x] 冲突解决 UX (`resolve` CLI + Web Use Ours/Theirs)
-- [x] gc 垃圾回收
-- [x] 只读 fsck（引用、父提交 / 文件映射、内容哈希）
-- [x] Web UI (Vis.js 提交图)
+- [x] SQLite 单库存储与事务边界
+- [x] Netty push / fetch / pull、共享令牌与可选 TLS
+- [x] push CAS、对象哈希校验、显式编码替换 Java 序列化
+- [x] GC 与 push 互斥、`fsck`、工作区原子写入与 journal 恢复
+- [x] Diff3 行级合并、`resolve`、Web 冲突面板
+- [x] 多采样基准、同机 git 对照、10 客户端并发压测
+- [ ] 服务端业务处理移出 IO 线程，并补并发吞吐测试
+- [ ] 大对象分批 / 流式传输
+- [ ] 压测中稳定覆盖 CAS 拒绝路径
 
 ## 背景
 
-由 CS61B（2021 Spring）Gitlet 演化，原仓库：[NelxJoe306/Gitlet](https://github.com/NelxJoe306/Gitlet)。
+由 CS61B Gitlet 演化而来（[NelxJoe306/Gitlet](https://github.com/NelxJoe306/Gitlet)），在其基础上重做了存储层，并新增同步协议、完整性校验、GC / fsck、崩溃恢复、Diff3 与 Web 界面。

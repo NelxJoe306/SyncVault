@@ -14,7 +14,7 @@ Machine-readable CSV output from the benchmark run is checked in at [`docs/bench
 - **Storage Backend**: SQLite (`sqlite-jdbc 3.46.1.3`) in an isolated temporary repository under `/tmp`
 - **Filesystem (`disk` vs `tmpfs`) Caveat**:
   - `syncvault.Benchmark` creates temporary working directories under `/tmp` (`Files.createTempDirectory(Path.of("/tmp"), ...)`).
-  - On this test machine, `/tmp` is backed by an `ext4` filesystem on `/dev/vdb` (`Benchmark` auto-detects and prints the mount `fstype` from `/proc/mounts`). Because `ext4` performs block-level journal flushes, write-heavy batches at $N = 10,000$ occasionally observe a background flush spike in the tail (`p95`), while the `median` reflects steady-state throughput.
+  - On this test machine, `/tmp` is backed by an `ext4` filesystem on `/dev/vdb` (`Benchmark` auto-detects and prints the mount `fstype` from `/proc/mounts`). Because `ext4` performs block-level journal flushes, write-heavy batches at $N = 10,000$ can show a large tail outlier (`max` with $n=5$); this is **suspected** to be an ext4 journal flush stall and has **not** been verified against a tmpfs control. The `median` reflects steady-state throughput.
   - On many Linux hosts and container environments, `/tmp` is mounted as `tmpfs` (RAM-backed). Running under `tmpfs` eliminates block-device sync latency and yields lower commit latencies than physical disk mounts. Keep the underlying `/tmp` mount type in mind when comparing numbers across machines.
 
 ## Methodology
@@ -26,7 +26,7 @@ For each commit scale $N \in \{1000, 10000\}$, `syncvault.Benchmark` spawns an i
    - The warmup iteration warms up classloading, the SQLite native JDBC driver, Netty event loops, and the HotSpot C2 JIT compiler before any timings are recorded.
    - Before every iteration, the worker closes the active SQLite session and deletes `.syncvault` and all working-tree files so each sample measures a fresh repository from `Repository.init()`.
 2. **Statistical Aggregation**:
-   - For each operation and scale, the harness reports **median** ($p_{50}$) and **p95** (nearest-rank $\lceil 0.95 \times S \rceil$-th ordered sample across $S = 5$ samples) in milliseconds, both in the Markdown table on stdout and in [`docs/bench-results.csv`](./bench-results.csv).
+   - For each operation and scale, the harness reports **median** ($p_{50}$) and **max** (with $S = 5$, nearest-rank p95 equals the maximum sample) in milliseconds, both in the Markdown table on stdout and in [`docs/bench-results.csv`](./bench-results.csv) (CSV column `max_ms`).
 3. **Measured Operations**:
    - `commit_batch`: Total wall-clock time for $N$ sequential `add` + `commit` operations rotating updates across 5 tracked files (`note_0.txt` .. `note_4.txt`), creating branch `early` at commit `#1`.
    - `commit_avg`: Mean latency per single `add` + `commit` within the $N$-commit batch (`commit_batch / N`).
@@ -44,22 +44,22 @@ For each commit scale $N \in \{1000, 10000\}$, `syncvault.Benchmark` spawns an i
 
 Source data: [`docs/bench-results.csv`](./bench-results.csv)
 
-| Scale ($N$ commits) | Samples | `commit_batch` med / p95 (ms) | `commit_avg` med / p95 (ms) | `log` med / p95 (ms) | `status` med / p95 (ms) | `checkout` early -> tip med / p95 (ms) | `netty_push` med / p95 (ms) |
+| Scale ($N$ commits) | Samples | `commit_batch` med / max (ms) | `commit_avg` med / max (ms) | `log` med / max (ms) | `status` med / max (ms) | `checkout` early -> tip med / max (ms) | `netty_push` med / max (ms) |
 |---:|---:|---:|---:|---:|---:|---:|---:|
 | **1,000** | 5 | 2,389.05 / 2,453.05 | 2.39 / 2.45 | 15.47 / 21.53 | 0.41 / 0.48 | 7.22 / 9.30 | 199.08 / 237.82 |
 | **10,000** | 5 | 19,857.15 / 98,671.44 | 1.99 / 9.87 | 155.54 / 203.40 | 1.02 / 1.55 | 6.50 / 9.20 | 1,689.93 / 1,759.43 |
 
 Key observations:
-- **`commit_batch` and `commit_avg`**: Median per-commit latency improves slightly from `2.39 ms` at $N = 1,000$ to `1.99 ms` at $N = 10,000$ as C2 JIT compilation and SQLite page caches stay hot. At $N = 10,000$, one of the 5 samples encountered an `ext4` block journal flush stall on `/dev/vdb` (`98.67 s`), which is captured in `p95` while `median` (`19.86 s`) reflects steady-state execution.
+- **`commit_batch` and `commit_avg`**: Median per-commit latency improves slightly from `2.39 ms` at $N = 1,000$ to `1.99 ms` at $N = 10,000$ as C2 JIT compilation and SQLite page caches stay hot. At $N = 10,000$, one of the 5 samples was far slower (`98.67 s`); this is **suspected** to be an `ext4` block journal flush stall on `/dev/vdb` and has **not** been verified on tmpfs. That outlier is captured in `max` while `median` (`19.86 s`) reflects steady-state execution.
 - **`log`**: Scales linearly with commit chain depth (`15.47 ms` median at $1,000$ commits to `155.54 ms` median at $10,000$ commits, or `~15.5 us` per commit).
 - **`status` and `checkout`**: Depend on the number of tracked working-tree files (5 files) rather than commit history depth $N$, remaining flat (`~0.4 to 1.0 ms` median for `status`, `~6.5 to 7.2 ms` median for the two-step `early -> master` branch checkout).
-- **`netty_push`**: Transfers 1,000 commits + blobs over localhost TCP with full SHA-256 content-hash and parent-chain integrity verification in `199.08 ms` median (`237.82 ms` p95), and 10,000 commits in `1,689.93 ms` median (`1,759.43 ms` p95).
+- **`netty_push`**: Transfers 1,000 commits + blobs over localhost TCP with full SHA-256 content-hash and parent-chain integrity verification in `199.08 ms` median (`237.82 ms` max), and 10,000 commits in `1,689.93 ms` median (`1,759.43 ms` max).
 
 ## Same-Machine Baseline Comparison with `git` ($N = 1,000$)
 
 Using the identical workload in `/tmp` on the same machine (`git 2.47.3`, 1 warmup + 5 measured samples, 5 rotating tracked files, `early` branch at commit `#1`):
 
-| Operation ($N = 1,000$) | SyncVault med / p95 (ms) | `git 2.47.3` med / p95 (ms) | Architectural Notes |
+| Operation ($N = 1,000$) | SyncVault med / max (ms) | `git 2.47.3` med / max (ms) | Architectural Notes |
 |---|---:|---:|---|
 | **`log` (1,000 commits, stdout -> null)** | 15.47 / 21.53 | 15.45 / 16.25 | Near-identical median latency (`15.47 ms` vs `15.45 ms`); SyncVault walks `commit_parent` and `object` rows in SQLite while `git` walks loose object files in `.git/objects`. |
 | **`status` (5 tracked files)** | 0.41 / 0.48 | 1.63 / 1.86 | SyncVault runs in-process inside the warm worker JVM; `git status` includes `fork` + `exec` process startup overhead (~1 ms). |

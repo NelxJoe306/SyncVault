@@ -19,7 +19,7 @@ elif [ "$#" -eq 1 ] && [ "$1" = "--smoke" ]; then
     trap 'rm -f "${SMOKE_CSV}"' EXIT
     java -jar "${JAR_FILE}" bench --smoke --csv="${SMOKE_CSV}"
     test -s "${SMOKE_CSV}"
-    head -n 1 "${SMOKE_CSV}" | grep -q "^scale,op,median_ms,p95_ms,samples,notes$"
+    head -n 1 "${SMOKE_CSV}" | grep -q "^scale,op,median_ms,max_ms,samples,notes$"
 else
     java -jar "${JAR_FILE}" bench "$@"
 fi

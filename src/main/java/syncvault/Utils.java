@@ -278,7 +278,7 @@ class Utils {
     /* SERIALIZATION UTILITIES */
 
     /**
-     * Java serialization for local debug files such as {@code DumpObj}.
+     * Java serialization helper for local debug / legacy use.
      * Commits and sync messages do not use this; see {@code Commit.encode}
      * and {@code SyncMessage.encode}.
      */

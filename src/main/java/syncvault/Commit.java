@@ -20,7 +20,7 @@ import static syncvault.Repository.*;
  *
  *  @author JOE
  */
-public class Commit implements Serializable, Dumpable {
+public class Commit implements Serializable {
     /**
      * SVC1 commit encoding (big-endian). The commit id is the hash of these
      * bytes. {@code self_hash} is not a field; {@code getCommit} fills it from
@@ -401,11 +401,5 @@ public class Commit implements Serializable, Dumpable {
         } catch (IOException e) {
             throw new SyncVaultException("invalid commit encoding");
         }
-    }
-
-    @Override
-    public void dump() {
-        System.out.printf("parent: %s%n map: %s%n self_hash: %s%n",
-                this.parent,this.nameToHash, this.self_hash);
     }
 }

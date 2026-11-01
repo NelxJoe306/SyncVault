@@ -10,7 +10,7 @@
 
 **技术栈**：Java 17 · Netty 4 · SQLite（sqlite-jdbc）· Maven · JUnit 5 · Python 集成测试 · GitHub Actions
 
-**一句话**：两台机器之间能安全地同步一个版本库——并发 push 不会丢提交，传输中被篡改的对象会被拒绝，写到一半断电也能恢复。
+**一句话**：两台机器之间能安全地同步一个版本库——并发 push 不会丢提交，传输中被篡改的对象会被拒绝，写到一半进程异常中断后可恢复。
 
 ## 这个项目想解决什么问题
 
@@ -76,7 +76,7 @@ $SV web 8080     # 浏览器打开 http://127.0.0.1:8080
 
 **微基准**（预热 1 次 + 采样 5 次，单位 ms，原始数据见 [docs/bench-results.csv](docs/bench-results.csv)）：
 
-| 规模 | 操作 | 中位数 | p95 |
+| 规模 | 操作 | 中位数 | max |
 |---:|---|---:|---:|
 | 1,000 提交 | 单次 add+commit（均值） | 2.39 | 2.45 |
 | 1,000 提交 | `log` | 15.47 | 21.53 |
@@ -87,7 +87,7 @@ $SV web 8080     # 浏览器打开 http://127.0.0.1:8080
 
 与同机 `git 2.47.3` 对照（1,000 提交，中位数）：`log` 15.47 ms 对 15.45 ms；`checkout` 7.22 ms 对 3.46 ms（SyncVault 更慢，因为要写 journal 并更新 SQLite）。`status` 与批量 `commit` 的差距主要来自 SyncVault 在热 JVM 内执行、git 每次启动新进程，**不是同口径的性能优势**。
 
-> 10,000 提交的批量 commit 有一次样本明显偏慢（p95 远高于中位数），目前推测与测试机 ext4 刷盘有关，尚未在 tmpfs 上对照验证。完整方法、环境与复现命令见 [docs/benchmarks.md](docs/benchmarks.md)。
+> 10,000 提交的批量 commit 有一次样本明显偏慢（max 远高于中位数），目前推测与测试机 ext4 刷盘有关，尚未在 tmpfs 上对照验证。完整方法、环境与复现命令见 [docs/benchmarks.md](docs/benchmarks.md)。
 
 ## 设计取舍与已知局限
 
@@ -106,7 +106,7 @@ src/main/resources/web/     Web UI（Vis.js 提交图）
 src/test/java/syncvault/    JUnit 5 测试
 tests/integration/          Python 驱动的命令级集成测试
 scripts/                    run-integration-tests.sh · bench.sh · concurrent-push-test.sh · demo.tape · record-demo.sh
-docs/                       design.md（设计与协议）· commands.md（命令参考）· benchmarks.md · bench-results.csv
+docs/                       design.md（设计与协议）· history.md（Gitlet 时代归档）· commands.md（命令参考）· benchmarks.md · bench-results.csv
 .github/workflows/          ci.yml（构建 · 集成测试 · bench --smoke）
 ```
 

@@ -1,4 +1,4 @@
-scale,op,median_ms,p95_ms,samples,notes
+scale,op,median_ms,max_ms,samples,notes
 1000,commit_batch,2389.05,2453.05,5,N sequential add+commit operations across 5 tracked files (warmup=1; workdir=/tmp (ext4; often tmpfs))
 1000,commit_avg,2.39,2.45,5,Per-commit mean latency across N sequential commits (warmup=1; workdir=/tmp (ext4; often tmpfs))
 1000,log,15.47,21.53,5,First-parent history traversal from HEAD to root with stdout redirected (warmup=1; workdir=/tmp (ext4; often tmpfs))

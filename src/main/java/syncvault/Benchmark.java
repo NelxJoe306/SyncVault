@@ -38,7 +38,7 @@ public class Benchmark {
             double nettyPushMs
     ) {}
 
-    public record OpStats(double medianMs, double p95Ms) {}
+    public record OpStats(double medianMs, double maxMs) {}
 
     public record ScaleSummary(
             int commits,
@@ -300,7 +300,7 @@ public class Benchmark {
     }
 
     static OpStats computeStats(List<Double> values) {
-        return new OpStats(percentile(values, 50.0), percentile(values, 95.0));
+        return new OpStats(percentile(values, 50.0), maxOf(values));
     }
 
     static double percentile(List<Double> values, double p) {
@@ -319,6 +319,19 @@ public class Benchmark {
         int idx = (int) Math.ceil((p / 100.0) * sorted.size()) - 1;
         idx = Math.max(0, Math.min(sorted.size() - 1, idx));
         return sorted.get(idx);
+    }
+
+    static double maxOf(List<Double> values) {
+        if (values == null || values.isEmpty()) {
+            return 0.0;
+        }
+        double m = values.get(0);
+        for (double v : values) {
+            if (v > m) {
+                m = v;
+            }
+        }
+        return m;
     }
 
     private static String detectTmpFsType() {
@@ -363,38 +376,38 @@ public class Benchmark {
         System.out.printf("- **vCPUs**: `%d`%n", Runtime.getRuntime().availableProcessors());
         System.out.printf("- **Workdir**: `/tmp` (detected fstype: `%s`; note: `/tmp` is often `tmpfs` on Linux)%n",
                 tmpFs);
-        System.out.printf("- **Sampling**: `%d` warmup + `%d` measured samples per scale (reporting **median / p95**)%n",
+        System.out.printf("- **Sampling**: `%d` warmup + `%d` measured samples per scale (reporting **median / max**)%n",
                 warmupCount, sampleCount);
         System.out.println();
 
         if (withNetty) {
-            System.out.println("| Scale (N) | Samples | N Commits med / p95 (ms) | Avg Commit med / p95 (ms) | `log` med / p95 (ms) | `status` med / p95 (ms) | `checkout` med / p95 (ms) | Netty `push` med / p95 (ms) |");
+            System.out.println("| Scale (N) | Samples | N Commits med / max (ms) | Avg Commit med / max (ms) | `log` med / max (ms) | `status` med / max (ms) | `checkout` med / max (ms) | Netty `push` med / max (ms) |");
             System.out.println("|---:|---:|---:|---:|---:|---:|---:|---:|");
             for (ScaleSummary s : summaries) {
                 System.out.printf(Locale.ROOT,
                         "| %d | %d | %.2f / %.2f | %.2f / %.2f | %.2f / %.2f | %.2f / %.2f | %.2f / %.2f | %.2f / %.2f |%n",
                         s.commits(),
                         s.samples(),
-                        s.commitTotal().medianMs(), s.commitTotal().p95Ms(),
-                        s.commitAvg().medianMs(), s.commitAvg().p95Ms(),
-                        s.log().medianMs(), s.log().p95Ms(),
-                        s.status().medianMs(), s.status().p95Ms(),
-                        s.checkoutEarlyToTip().medianMs(), s.checkoutEarlyToTip().p95Ms(),
-                        s.nettyPush().medianMs(), s.nettyPush().p95Ms());
+                        s.commitTotal().medianMs(), s.commitTotal().maxMs(),
+                        s.commitAvg().medianMs(), s.commitAvg().maxMs(),
+                        s.log().medianMs(), s.log().maxMs(),
+                        s.status().medianMs(), s.status().maxMs(),
+                        s.checkoutEarlyToTip().medianMs(), s.checkoutEarlyToTip().maxMs(),
+                        s.nettyPush().medianMs(), s.nettyPush().maxMs());
             }
         } else {
-            System.out.println("| Scale (N) | Samples | N Commits med / p95 (ms) | Avg Commit med / p95 (ms) | `log` med / p95 (ms) | `status` med / p95 (ms) | `checkout` med / p95 (ms) |");
+            System.out.println("| Scale (N) | Samples | N Commits med / max (ms) | Avg Commit med / max (ms) | `log` med / max (ms) | `status` med / max (ms) | `checkout` med / max (ms) |");
             System.out.println("|---:|---:|---:|---:|---:|---:|---:|");
             for (ScaleSummary s : summaries) {
                 System.out.printf(Locale.ROOT,
                         "| %d | %d | %.2f / %.2f | %.2f / %.2f | %.2f / %.2f | %.2f / %.2f | %.2f / %.2f |%n",
                         s.commits(),
                         s.samples(),
-                        s.commitTotal().medianMs(), s.commitTotal().p95Ms(),
-                        s.commitAvg().medianMs(), s.commitAvg().p95Ms(),
-                        s.log().medianMs(), s.log().p95Ms(),
-                        s.status().medianMs(), s.status().p95Ms(),
-                        s.checkoutEarlyToTip().medianMs(), s.checkoutEarlyToTip().p95Ms());
+                        s.commitTotal().medianMs(), s.commitTotal().maxMs(),
+                        s.commitAvg().medianMs(), s.commitAvg().maxMs(),
+                        s.log().medianMs(), s.log().maxMs(),
+                        s.status().medianMs(), s.status().maxMs(),
+                        s.checkoutEarlyToTip().medianMs(), s.checkoutEarlyToTip().maxMs());
             }
         }
     }
@@ -403,7 +416,7 @@ public class Benchmark {
             List<ScaleSummary> summaries, boolean withNetty, String csvPath) throws IOException {
         String tmpFs = detectTmpFsType();
         StringBuilder sb = new StringBuilder();
-        sb.append("scale,op,median_ms,p95_ms,samples,notes\n");
+        sb.append("scale,op,median_ms,max_ms,samples,notes\n");
         for (ScaleSummary s : summaries) {
             int n = s.commits();
             int samples = s.samples();
@@ -438,7 +451,7 @@ public class Benchmark {
     private static void appendCsvRow(
             StringBuilder sb, int scale, String op, OpStats stats, int samples, String notes) {
         sb.append(String.format(Locale.ROOT, "%d,%s,%.2f,%.2f,%d,%s%n",
-                scale, op, stats.medianMs(), stats.p95Ms(), samples, notes));
+                scale, op, stats.medianMs(), stats.maxMs(), samples, notes));
     }
 
     private static void cleanDirectoryContents(Path root) throws IOException {

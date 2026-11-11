@@ -1,0 +1,37 @@
+name: Issue notify
+
+on:
+  issues:
+    types: [opened, reopened]
+
+permissions: {}
+
+jobs:
+  notify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    steps:
+      - name: Post issue event to webhook
+        env:
+          WEBHOOK_URL: ${{ secrets.ROUTINE_WEBHOOK_URL }}
+          WEBHOOK_KEY: ${{ secrets.ROUTINE_WEBHOOK_KEY }}
+          REPOSITORY: ${{ github.repository }}
+          ISSUE_NUMBER: ${{ github.event.issue.number }}
+          ACTION: ${{ github.event.action }}
+          HTML_URL: ${{ github.event.issue.html_url }}
+        run: |
+          if [ -z "$WEBHOOK_URL" ] || [ -z "$WEBHOOK_KEY" ]; then
+            echo "ROUTINE_WEBHOOK_URL or ROUTINE_WEBHOOK_KEY is not set; skipping notification."
+            exit 0
+          fi
+          payload="$(jq -n \
+            --arg repository "$REPOSITORY" \
+            --arg issue_number "$ISSUE_NUMBER" \
+            --arg action "$ACTION" \
+            --arg html_url "$HTML_URL" \
+            '{repository: $repository, issue_number: ($issue_number | tonumber), action: $action, html_url: $html_url}')"
+          curl --fail-with-body --max-time 20 --retry 2 \
+            -H "Authorization: Bearer ${WEBHOOK_KEY}" \
+            -H "Content-Type: application/json" \
+            -d "${payload}" \
+            "${WEBHOOK_URL}"

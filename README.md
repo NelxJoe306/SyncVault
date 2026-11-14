@@ -121,4 +121,4 @@ docs/                       design.md（设计与协议）· history.md（Gitlet
 
 ## 背景
 
-由 CS61B Gitlet 演化而来（[NelxJoe306/Gitlet](https://github.com/NelxJoe306/Gitlet)），在其基础上重做了存储层，并新增同步协议、完整性校验、GC / fsck、崩溃恢复、Diff3 与 Web 界面。
+由Gitlet 演化而来（[NelxJoe306/Gitlet](https://github.com/NelxJoe306/Gitlet)），在其基础上重做了存储层，并新增同步协议、完整性校验、GC / fsck、崩溃恢复、Diff3 与 Web 界面。
